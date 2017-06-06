@@ -267,25 +267,54 @@ struct LaunchMaxPooling3dGradOp {
 #endif
 
           const Device& d = context->eigen_device<Device>();
+          typedef typename TTypes<T, 5>::Tensor Slice;
+          const TensorShape dst_slice_shape({dst_sizes[0], dst_sizes[1],
+                                             dst_sizes[2], dst_sizes[3],
+                                             dst_sizes[4]});
+          const TensorShape src_slice_shape({src_sizes[0], src_sizes[1],
+                                             src_sizes[2], src_sizes[3],
+                                             src_sizes[4]});
+
           // Slice from tensor_in.
-          Eigen::Tensor<T, 5, Eigen::RowMajor> tensor_in_slice(dst_sizes);
+          Tensor tensor_in_slice_tensor;
+          OP_REQUIRES_OK(context, context->allocate_temp(
+                                      DataTypeToEnum<T>::value, dst_slice_shape,
+                                      &tensor_in_slice_tensor));
+          Slice tensor_in_slice = tensor_in_slice_tensor.tensor<T, 5>();
           tensor_in_slice.device(d) =
               tensor_in.tensor<T, 5>().slice(dst_indices, dst_sizes);
 
           // Slice from tensor_out.
-          Eigen::Tensor<T, 5, Eigen::RowMajor> tensor_out_slice(src_sizes);
+          Tensor tensor_out_slice_tensor;
+          OP_REQUIRES_OK(context, context->allocate_temp(
+                                      DataTypeToEnum<T>::value, src_slice_shape,
+                                      &tensor_out_slice_tensor));
+          Slice tensor_out_slice = tensor_out_slice_tensor.tensor<T, 5>();
           tensor_out_slice.device(d) =
               tensor_out.tensor<T, 5>().slice(src_indices, src_sizes);
 
           // Backprop slice.
-          Eigen::Tensor<T, 5, Eigen::RowMajor> out_backprop_slice(src_sizes);
+          Tensor out_backprop_slice_tensor;
+          OP_REQUIRES_OK(context, context->allocate_temp(
+                                      DataTypeToEnum<T>::value, src_slice_shape,
+                                      &out_backprop_slice_tensor));
+          Slice out_backprop_slice = out_backprop_slice_tensor.tensor<T, 5>();
           out_backprop_slice.device(d) =
               out_backprop.tensor<T, 5>().slice(src_indices, src_sizes);
 
           // The true backprop slice: if an element is the max, choose
           // the backprop slice; otherwise set to 0.
-          Eigen::Tensor<T, 5, Eigen::RowMajor> select_slice(dst_sizes);
-          Eigen::Tensor<T, 5, Eigen::RowMajor> mat0(dst_sizes);
+          Tensor select_slice_tensor;
+          Tensor mat0_tensor;
+          OP_REQUIRES_OK(context, context->allocate_temp(
+                                      DataTypeToEnum<T>::value, dst_slice_shape,
+                                      &select_slice_tensor));
+          OP_REQUIRES_OK(context,
+                         context->allocate_temp(DataTypeToEnum<T>::value,
+                                                dst_slice_shape, &mat0_tensor));
+          Slice select_slice = select_slice_tensor.tensor<T, 5>();
+          Slice mat0 = mat0_tensor.tensor<T, 5>();
+
           mat0.setZero().device(d);
           select_slice.device(d) =
               ((tensor_in_slice - tensor_out_slice.broadcast(bcast)).abs() <
@@ -756,8 +785,7 @@ TF_CALL_float(REGISTER_CPU_KERNELS);
                               .TypeConstraint<T>("T")               \
                               .TypeConstraint<T>("TInput"),         \
                           MaxPooling3dGradOp<SYCLDevice, T>);
-TF_CALL_float(REGISTER_SYCL_POOL_KERNELS);
-TF_CALL_double(REGISTER_SYCL_POOL_KERNELS);
+TF_CALL_float(REGISTER_SYCL_POOL_KERNELS)
 #undef REGISTER_SYCL_POOL_KERNELS
 #endif  // TENSORFLOW_USE_SYCL
 
