@@ -201,6 +201,7 @@ static void SpatialMaxPoolWithArgMaxHelper(
 // copied into that output element.
 template <typename T>
 class MaxPool2DSYCL {
+  using Index = int;
   using write_accessor =
       cl::sycl::accessor<uint8_t, 1, cl::sycl::access::mode::write,
                          cl::sycl::access::target::global_buffer>;
@@ -209,43 +210,48 @@ class MaxPool2DSYCL {
                          cl::sycl::access::target::global_buffer>;
 
  public:
-  MaxPool2DSYCL(const PoolParameters& params,
+  MaxPool2DSYCL(const Index n_outputs,
+                const PoolParameters& params,
                 const read_accessor input_accessor,
                 write_accessor output_accessor)
-      : p_(params),
+      : n_outputs_(n_outputs),
+        p_(params),
         input_accessor_(input_accessor),
         output_accessor_(output_accessor) {}
-  void operator()(cl::sycl::item<1> item) {
+  void operator()(cl::sycl::nd_item<1> item) {
     T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
     T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
 
-    int index = item.get_linear_id();
-    int n = index;
-    int d = n % p_.depth_;
-    n /= p_.depth_;
-    int cstart = (n % p_.out_cols_) * p_.stride_cols_ - p_.pad_cols_;
-    int cend = std::min(cstart + p_.window_cols_, p_.in_cols_);
-    cstart = std::max(cstart, 0);
-    n /= p_.out_cols_;
-    int rstart = (n % p_.out_rows_) * p_.stride_rows_ - p_.pad_rows_;
-    int rend = std::min(rstart + p_.window_rows_, p_.in_rows_);
-    rstart = std::max(rstart, 0);
-    n /= p_.out_rows_;
-    T maxval = Eigen::NumTraits<T>::lowest();
-    const T* input_data_n =
-        input_data + n * p_.in_cols_ * p_.in_rows_ * p_.depth_;
-    for (int r = rstart; r < rend; ++r) {
-      for (int c = cstart; c < cend; ++c) {
-        int idx = (r * p_.in_cols_ + c) * p_.depth_ + d;
-        if (input_data_n[idx] > maxval) {
-          maxval = input_data_n[idx];
+    Index index = item.get_global_linear_id();
+    if(index < n_outputs_) {
+      Index n = index;
+      const Index d = n % p_.depth_;
+      n /= p_.depth_;
+      Index cstart = (n % p_.out_cols_) * p_.stride_cols_ - p_.pad_cols_;
+      const Index cend = std::min(cstart + p_.window_cols_, p_.in_cols_);
+      cstart = std::max(cstart, 0);
+      n /= p_.out_cols_;
+      Index rstart = (n % p_.out_rows_) * p_.stride_rows_ - p_.pad_rows_;
+      const Index rend = std::min(rstart + p_.window_rows_, p_.in_rows_);
+      rstart = std::max(rstart, 0);
+      n /= p_.out_rows_;
+      T maxval = Eigen::NumTraits<T>::lowest();
+      const T* input_data_n =
+          input_data + n * p_.in_cols_ * p_.in_rows_ * p_.depth_;
+      for (Index r = rstart; r < rend; ++r) {
+        for (Index c = cstart; c < cend; ++c) {
+          const Index idx = (r * p_.in_cols_ + c) * p_.depth_ + d;
+          if (input_data_n[idx] > maxval) {
+            maxval = input_data_n[idx];
+          }
         }
       }
+      output_data[index] = maxval;
     }
-    output_data[index] = maxval;
   }
 
  private:
+  const Index n_outputs_;
   const SYCL2DPoolParams p_;
   const read_accessor input_accessor_;
   write_accessor output_accessor_;
@@ -253,10 +259,14 @@ class MaxPool2DSYCL {
 
 template <typename T>
 struct LaunchMaxPoolingOpSYCL {
+  using Index = int;
   static void launch(OpKernelContext* context, Tensor* output,
                      const Tensor& tensor_in, const PoolParameters& params) {
     const SYCLDevice& device = context->eigen_device<SYCLDevice>();
-    const int num_threads = output->NumElements();
+    const Index output_size = output->NumElements();
+    const Index workgroup_size = device.maxSyclThreadsPerBlock();
+    const Index n_threads =
+        output_size + (workgroup_size - (output_size % workgroup_size));
 
     auto input_buffer =
         device.get_sycl_buffer(tensor_in.template flat<T>().data());
@@ -268,9 +278,12 @@ struct LaunchMaxPoolingOpSYCL {
           input_buffer.template get_access<cl::sycl::access::mode::read>(cgh);
       auto output_access =
           output_buffer.template get_access<cl::sycl::access::mode::write>(cgh);
-      MaxPool2DSYCL<T> max_pool(params, input_access, output_access);
+      MaxPool2DSYCL<T> max_pool(output_size, params, input_access, output_access);
 
-      cgh.parallel_for(cl::sycl::range<1>(num_threads), max_pool);
+      cgh.parallel_for(
+          cl::sycl::nd_range<1>(cl::sycl::range<1>(n_threads),
+                                cl::sycl::range<1>(workgroup_size)),
+          max_pool);
     });
   }
 };
@@ -562,7 +575,7 @@ class MaxPoolingGradOp<Eigen::GpuDevice, T> : public OpKernel {
 
 #ifdef TENSORFLOW_USE_SYCL
 template <typename T>
-struct LaunchMaxPoolingGradOpSYCL;
+struct LaunchMaxPoolingGradSYCL;
 
 template <class T>
 class MaxPoolingGradOp<SYCLDevice, T> : public OpKernel {
@@ -603,10 +616,6 @@ class MaxPoolingGradOp<SYCLDevice, T> : public OpKernel {
                 errors::InvalidArgument("out_backprop must be 4-dimensional"));
 
     const TensorShape& output_shape = tensor_in.shape();
-    Tensor argmax_tensor;
-    OP_REQUIRES_OK(context,
-                   context->allocate_temp(DataTypeToEnum<int>::v(),
-                                          tensor_out.shape(), &argmax_tensor));
     Tensor* input_backprop;
     OP_REQUIRES_OK(context, context->forward_input_or_allocate_output(
                                 {0}, 0, output_shape, &input_backprop));
@@ -616,9 +625,8 @@ class MaxPoolingGradOp<SYCLDevice, T> : public OpKernel {
     if (!context->status().ok()) {
       return;
     }
-    LaunchMaxPoolingGradOpSYCL<T>::launch(context, tensor_in, tensor_out,
-                                          out_backprop, params, &argmax_tensor,
-                                          input_backprop);
+    LaunchMaxPoolingGradSYCL<T>::launch(context, tensor_in, tensor_out,
+                                        out_backprop, params, input_backprop);
   }
 
  private:
@@ -1538,17 +1546,116 @@ class MaxPoolGradSYCL {
   using read_accessor =
       cl::sycl::accessor<uint8_t, 1, cl::sycl::access::mode::read,
                          cl::sycl::access::target::global_buffer>;
+
+ public:
+  MaxPoolGradSYCL(const Index n_outputs,
+                  const PoolParameters& params,
+                  const read_accessor input_data_accessor,
+                  const read_accessor output_data_accessor,
+                  const read_accessor input_backprop_accessor,
+                  write_accessor output_backprop_accessor)
+      : n_outputs_(n_outputs),
+        p_(params),
+        input_data_accessor_(input_data_accessor),
+        output_data_accessor_(output_data_accessor),
+        input_backprop_accessor_(input_backprop_accessor),
+        output_backprop_accessor_(output_backprop_accessor) {}
+  void operator()(cl::sycl::nd_item<1> item) {
+    const T* input_data = ConvertToActualTypeSycl(T, input_data_accessor_);
+    const T* output_data = ConvertToActualTypeSycl(T, output_data_accessor_);
+    const T* input_backprop = ConvertToActualTypeSycl(T, input_backprop_accessor_);
+    T* output_backprop = ConvertToActualTypeSycl(T, output_backprop_accessor_);
+
+    const Index index = item.get_global_linear_id();
+    if(index < n_outputs_) {
+      T output_value = 0;
+      Index n = index;
+      const Index d = n % p_.depth_;
+      n /= p_.depth_;
+      const Index c = (n % p_.in_cols_) + p_.pad_cols_;
+      const Index poolcstart =
+          (c < p_.window_cols_) ? 0 : (c - p_.window_cols_) / p_.stride_cols_ + 1;
+      const Index poolcend = std::min(c / p_.stride_cols_ + 1, p_.out_cols_);
+      n /= p_.in_cols_;
+      const Index r = (n % p_.in_rows_) + p_.pad_rows_;
+      const Index poolrstart =
+          (r < p_.window_rows_) ? 0 : (r - p_.window_rows_) / p_.stride_rows_ + 1;
+      const Index poolrend = std::min(r / p_.stride_rows_ + 1, p_.out_rows_);
+      n /= p_.in_rows_;
+      const Index index_no_n = index - n * p_.in_cols_ * p_.in_rows_ * p_.depth_;
+
+      const T* input_data_n =
+          input_data + n * p_.in_cols_ * p_.in_rows_ * p_.depth_;
+      const T* output_data_n =
+          output_data + n * p_.out_cols_ * p_.out_rows_ * p_.depth_;
+      const T* input_backprop_n =
+          input_backprop + n * p_.out_cols_ * p_.out_rows_ * p_.depth_;
+
+      for (Index poolr = poolrstart; poolr < poolrend; ++poolr) {
+        Index rstart = poolr * p_.stride_rows_ - p_.pad_rows_;
+        const Index rend = std::min(rstart + p_.window_rows_, p_.in_rows_);
+        rstart = std::max(rstart, 0);
+
+        for (Index poolc = poolcstart; poolc < poolcend; ++poolc) {
+          Index cstart = poolc * p_.stride_cols_ - p_.pad_cols_;
+          const Index cend = std::min(cstart + p_.window_cols_, p_.in_cols_);
+          cstart = std::max(cstart, 0);
+
+          const Index output_data_idx =
+              (poolr * p_.out_cols_ + poolc) * p_.depth_ + d;
+          bool should_continue = true;
+          bool is_max = (input_data[index] == output_data_n[output_data_idx]);
+          for (Index win_r = rstart; win_r < rend && should_continue; ++win_r) {
+            for (Index win_c = cstart; win_c < cend && should_continue; ++win_c) {
+              const Index input_data_idx =
+                  (win_r * p_.in_cols_ + win_c) * p_.depth_ + d;
+              if (input_data_idx == index_no_n) {
+                should_continue = false;
+              } else if (input_data_n[input_data_idx] ==
+                         output_data_n[output_data_idx]) {
+                should_continue = false;
+                is_max = false;
+              }
+            }
+          }
+          if (is_max) {
+            output_value += input_backprop_n[output_data_idx];
+          }
+        }
+      }
+      output_backprop[index] = output_value;
+    }
+  }
+
+ private:
+  const Index n_outputs_;
+  const SYCL2DPoolParams p_;
+
+  const read_accessor input_data_accessor_;
+  const read_accessor output_data_accessor_;
+  const read_accessor input_backprop_accessor_;
+  write_accessor output_backprop_accessor_;
+};
+template <typename T>
+class MaxPoolGradArgmaxSYCL {
+  using Index = int;
+  using write_accessor =
+      cl::sycl::accessor<uint8_t, 1, cl::sycl::access::mode::write,
+                         cl::sycl::access::target::global_buffer>;
+  using read_accessor =
+      cl::sycl::accessor<uint8_t, 1, cl::sycl::access::mode::read,
+                         cl::sycl::access::target::global_buffer>;
   using tmp_accessor =
       cl::sycl::accessor<uint8_t, 1, cl::sycl::access::mode::discard_read_write,
                          cl::sycl::access::target::global_buffer>;
 
  public:
-  MaxPoolGradSYCL(const Index n_outputs, const PoolParameters& params,
-                  const read_accessor input_data_accessor,
-                  const read_accessor output_data_accessor,
-                  const read_accessor input_backprop_accessor,
-                  tmp_accessor argmax_accessor,
-                  write_accessor output_backprop_accessor)
+  MaxPoolGradArgmaxSYCL(const Index n_outputs, const PoolParameters& params,
+                        const read_accessor input_data_accessor,
+                        const read_accessor output_data_accessor,
+                        const read_accessor input_backprop_accessor,
+                        tmp_accessor argmax_accessor,
+                        write_accessor output_backprop_accessor)
       : n_outputs_(n_outputs),
         p_(params),
         input_data_accessor_(input_data_accessor),
@@ -1639,12 +1746,11 @@ class MaxPoolGradSYCL {
   write_accessor output_backprop_accessor_;
 };
 template <typename T>
-struct LaunchMaxPoolingGradOpSYCL {
+struct LaunchMaxPoolingGradSYCL {
   using Index = int;
   static void launch(OpKernelContext* context, const Tensor& tensor_in,
                      const Tensor& tensor_out, const Tensor& out_backprop,
-                     const PoolParameters& params, Tensor* argmax,
-                     Tensor* output) {
+                     const PoolParameters& params, Tensor* output) {
     const SYCLDevice& device = context->eigen_device<SYCLDevice>();
 
     const Index output_size = output->NumElements();
@@ -1659,35 +1765,70 @@ struct LaunchMaxPoolingGradOpSYCL {
         device.get_sycl_buffer(out_backprop.template flat<T>().data());
     auto output_backprop_buffer =
         device.get_sycl_buffer(output->template flat<T>().data());
-    auto argmax_buffer =
-        device.get_sycl_buffer(argmax->template flat<Index>().data());
 
-    device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
-      auto input_data_access =
-          input_data_buffer.template get_access<cl::sycl::access::mode::read>(
-              cgh);
-      auto output_data_access =
-          output_data_buffer.template get_access<cl::sycl::access::mode::read>(
-              cgh);
-      auto input_backprop_access =
-          input_backprop_buffer
-              .template get_access<cl::sycl::access::mode::read>(cgh);
-      auto output_backprop_access =
-          output_backprop_buffer
-              .template get_access<cl::sycl::access::mode::write>(cgh);
-      auto argmax_access =
-          argmax_buffer
-              .template get_access<cl::sycl::access::mode::discard_read_write>(
-                  cgh);
-      MaxPoolGradSYCL<T> max_pool(output_size, params, input_data_access,
-                                  output_data_access, input_backprop_access,
-                                  argmax_access, output_backprop_access);
+    if(use_argmax(params)) {
+      Tensor argmax_tensor;
+      OP_REQUIRES_OK(context,
+                     context->allocate_temp(DataTypeToEnum<int>::v(),
+                                            tensor_out.shape(), &argmax_tensor));
+      auto argmax_buffer =
+          device.get_sycl_buffer(argmax_tensor.template flat<Index>().data());
 
-      cgh.parallel_for(
-          cl::sycl::nd_range<1>(cl::sycl::range<1>(n_threads),
-                                cl::sycl::range<1>(workgroup_size)),
-          max_pool);
-    });
+      device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
+        auto input_data_access =
+            input_data_buffer.template get_access<cl::sycl::access::mode::read>(
+                cgh);
+        auto output_data_access =
+            output_data_buffer.template get_access<cl::sycl::access::mode::read>(
+                cgh);
+        auto input_backprop_access =
+            input_backprop_buffer
+                .template get_access<cl::sycl::access::mode::read>(cgh);
+        auto output_backprop_access =
+            output_backprop_buffer
+                .template get_access<cl::sycl::access::mode::write>(cgh);
+        auto argmax_access =
+            argmax_buffer
+                .template get_access<cl::sycl::access::mode::discard_read_write>(
+                    cgh);
+        MaxPoolGradArgmaxSYCL<T> max_pool(output_size, params, input_data_access,
+                                    output_data_access, input_backprop_access,
+                                    argmax_access, output_backprop_access);
+
+        cgh.parallel_for(
+            cl::sycl::nd_range<1>(cl::sycl::range<1>(n_threads),
+                                  cl::sycl::range<1>(workgroup_size)),
+            max_pool);
+      });
+    } else {
+      device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
+        auto input_data_access =
+            input_data_buffer.template get_access<cl::sycl::access::mode::read>(
+                cgh);
+        auto output_data_access =
+            output_data_buffer.template get_access<cl::sycl::access::mode::read>(
+                cgh);
+        auto input_backprop_access =
+            input_backprop_buffer
+                .template get_access<cl::sycl::access::mode::read>(cgh);
+        auto output_backprop_access =
+            output_backprop_buffer
+                .template get_access<cl::sycl::access::mode::write>(cgh);
+        MaxPoolGradSYCL<T> max_pool(output_size, params, input_data_access,
+                                    output_data_access, input_backprop_access,
+                                    output_backprop_access);
+        cgh.parallel_for(
+            cl::sycl::nd_range<1>(cl::sycl::range<1>(n_threads),
+                                  cl::sycl::range<1>(workgroup_size)),
+            max_pool);
+      });
+
+    }
+  }
+  private:
+  static bool use_argmax(const PoolParameters& params) {
+    return params.window_rows > 5 && params.window_cols > 5
+      && params.row_stride == 1 && params.col_stride == 1;
   }
 };
 // MaxPoolGradGrad SYCL kernel. Expects the number of threads to be equal to
