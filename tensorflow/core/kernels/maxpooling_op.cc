@@ -218,11 +218,11 @@ class MaxPool2DSYCL {
         p_(params),
         input_accessor_(input_accessor),
         output_accessor_(output_accessor) {}
-  void operator()(cl::sycl::nd_item<1> item) {
+  void operator()(cl::sycl::item<1> item) {
     T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
     T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
 
-    Index index = item.get_global_linear_id();
+    Index index = item.get_linear_id();
     if(index < n_outputs_) {
       Index n = index;
       const Index d = n % p_.depth_;
@@ -264,9 +264,7 @@ struct LaunchMaxPoolingOpSYCL {
                      const Tensor& tensor_in, const PoolParameters& params) {
     const SYCLDevice& device = context->eigen_device<SYCLDevice>();
     const Index output_size = output->NumElements();
-    const Index workgroup_size = device.maxSyclThreadsPerBlock();
-    const Index n_threads =
-        output_size + (workgroup_size - (output_size % workgroup_size));
+    const Index n_threads = output_size;
 
     auto input_buffer =
         device.get_sycl_buffer(tensor_in.template flat<T>().data());
@@ -281,8 +279,7 @@ struct LaunchMaxPoolingOpSYCL {
       MaxPool2DSYCL<T> max_pool(output_size, params, input_access, output_access);
 
       cgh.parallel_for(
-          cl::sycl::nd_range<1>(cl::sycl::range<1>(n_threads),
-                                cl::sycl::range<1>(workgroup_size)),
+            cl::sycl::range<1>(n_threads),
           max_pool);
     });
   }
@@ -1560,13 +1557,13 @@ class MaxPoolGradSYCL {
         output_data_accessor_(output_data_accessor),
         input_backprop_accessor_(input_backprop_accessor),
         output_backprop_accessor_(output_backprop_accessor) {}
-  void operator()(cl::sycl::nd_item<1> item) {
+  void operator()(cl::sycl::item<1> item) {
     const T* input_data = ConvertToActualTypeSycl(T, input_data_accessor_);
     const T* output_data = ConvertToActualTypeSycl(T, output_data_accessor_);
     const T* input_backprop = ConvertToActualTypeSycl(T, input_backprop_accessor_);
     T* output_backprop = ConvertToActualTypeSycl(T, output_backprop_accessor_);
 
-    const Index index = item.get_global_linear_id();
+    const Index index = item.get_linear_id();
     if(index < n_outputs_) {
       T output_value = 0;
       Index n = index;
@@ -1817,10 +1814,7 @@ struct LaunchMaxPoolingGradSYCL {
         MaxPoolGradSYCL<T> max_pool(output_size, params, input_data_access,
                                     output_data_access, input_backprop_access,
                                     output_backprop_access);
-        cgh.parallel_for(
-            cl::sycl::nd_range<1>(cl::sycl::range<1>(n_threads),
-                                  cl::sycl::range<1>(workgroup_size)),
-            max_pool);
+        cgh.parallel_for(cl::sycl::range<1>(output_size), max_pool);
       });
 
     }
