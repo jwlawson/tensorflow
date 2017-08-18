@@ -229,6 +229,8 @@ class AvgPool2DSYCL {
            padding),
         input_accessor_(input_accessor),
         output_accessor_(output_accessor) {}
+
+  inline TF_ATTRIBUTE_ALWAYS_INLINE
   void operator()(cl::sycl::item<1> item) {
     T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
     T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
@@ -764,6 +766,8 @@ class AvgPoolGradSYCL {
       : p_(depth, batch, in_rows, in_cols, out_shape, window, stride, padding),
         input_backprop_accessor_(input_backprop_accessor),
         output_backprop_accessor_(output_backprop_accessor) {}
+
+  inline TF_ATTRIBUTE_ALWAYS_INLINE
   void operator()(cl::sycl::item<1> item) {
     T* input_backprop = ConvertToActualTypeSycl(T, input_backprop_accessor_);
     T* output_backprop = ConvertToActualTypeSycl(T, output_backprop_accessor_);
