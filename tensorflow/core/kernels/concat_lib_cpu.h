@@ -144,11 +144,11 @@ void ConcatSYCLImpl(
     row_size += sizes.back();
   }
 
-  T* out = &(*output)(0, 0);
+  T* out = output->data();
   std::vector<const T*> inp;
   inp.reserve(num_inputs);
   for (const auto& input : inputs) {
-    inp.push_back(&(*input)(0, 0));
+    inp.push_back(input->data());
   }
   const int64 dim0 = output->dimension(0);
   for (int64 i = 0; i < dim0; ++i) {
