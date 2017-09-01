@@ -36,6 +36,7 @@ limitations under the License.
 #include "tensorflow/core/kernels/ops_util.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
+#include "tensorflow/core/lib/math/math_util.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/util/padding.h"
@@ -240,11 +241,35 @@ class Conv2DFastBackpropFilterOp : public OpKernel {
     }
 #endif
 
-    functor::SpatialConvolutionBackwardKernel<Device, T>()(
+    filter_backprop->flat<T>().device(context->eigen_device<Device>()) =
+      filter_backprop->flat<T>().constant(T(0));
+    size_t batch = dims.batch_size;
+    size_t out_bp_other = dims.spatial_dims[0].input_size * dims.spatial_dims[1].input_size * dims.in_depth;
+    size_t max_alloc = 740000000 / sizeof(T);
+    size_t filter_size = dims.spatial_dims[0].filter_size * dims.spatial_dims[1].filter_size;
+    size_t num_launches = MathUtil::CeilOfRatio(batch * out_bp_other * filter_size, max_alloc);
+    if (num_launches > batch) {
+      num_launches = batch;
+    }
+    size_t batch_per_launch = MathUtil::FloorOfRatio(batch, num_launches);
+    if (num_launches * batch_per_launch < batch) {
+      num_launches++;
+    }
+
+    for (size_t i = 0; i < num_launches; i++) {
+      size_t start = i * batch_per_launch;
+      size_t end = start + batch_per_launch;
+      if (i == num_launches - 1) {
+        end = batch;
+      }
+      const Tensor in_split = input.Slice(start, end);
+      const Tensor out_split = out_backprop.Slice(start, end);
+      functor::SpatialConvolutionBackwardKernel<Device, T>()(
         context->eigen_device<Device>(), filter_backprop->tensor<T, 4>(),
-        input.tensor<T, 4>(), out_backprop.tensor<T, 4>(),
+        in_split.tensor<T, 4>(), out_split.tensor<T, 4>(),
         dims.spatial_dims[0].filter_size, dims.spatial_dims[1].filter_size,
         dims.spatial_dims[0].stride, dims.spatial_dims[1].stride);
+    }
   }
 
  private:

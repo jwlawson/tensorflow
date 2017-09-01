@@ -37,6 +37,7 @@ limitations under the License.
 #endif
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
+#include "tensorflow/core/lib/math/math_util.h"
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/logging.h"
@@ -137,7 +138,7 @@ class LaunchConv2DOp<CPUDevice, T> {
 template <typename T>
 class LaunchConv2DOp<SYCLDevice, T> {
  public:
-  void launch(OpKernelContext* ctx, bool use_cudnn, bool cudnn_use_autotune,
+  void launch(OpKernelContext* ctx, bool /*use_cudnn*/, bool /*cudnn_use_autotune*/,
               const Tensor& input, const Tensor& filter, int row_stride,
               int col_stride, const Eigen::PaddingType& padding, Tensor* output,
               TensorFormat data_format) {
@@ -147,9 +148,34 @@ class LaunchConv2DOp<SYCLDevice, T> {
                                 "NHWC tensor format for now."));
       return;
     }
-    LaunchGeneric<SYCLDevice, T>::launch(ctx, input, filter, row_stride,
-                                        col_stride, padding, output,
-                                        data_format);
+
+    size_t in_batch = GetTensorDim(input, data_format, 'N');
+    size_t in_other_size = GetTensorDim(input, data_format, 'H') * GetTensorDim(input, data_format, 'W') * GetTensorDim(input, data_format, 'C');
+    size_t max_alloc = 740000000 / sizeof(T);
+    TensorShape filter_shape = filter.shape();
+    size_t filter_size = filter_shape.dim_size(0) * filter_shape.dim_size(1);
+    size_t num_launches = MathUtil::CeilOfRatio(in_batch * in_other_size * filter_size, max_alloc);
+    if (num_launches > in_batch) {
+      num_launches = in_batch;
+    }
+    size_t batch_per_launch = MathUtil::FloorOfRatio(in_batch, num_launches);
+    if (num_launches * batch_per_launch < in_batch) {
+      num_launches++;
+    }
+
+    for (size_t i = 0; i < num_launches; i++) {
+      size_t start = i * batch_per_launch;
+      size_t end = start + batch_per_launch;
+      if (i == num_launches - 1) {
+        end = in_batch;
+      }
+      Tensor in_split = input.Slice(start, end);
+      Tensor out_split = output->Slice(start, end);
+
+      LaunchGeneric<SYCLDevice, T>::launch(ctx, in_split, filter, row_stride,
+                                          col_stride, padding, &out_split,
+                                          data_format);
+    }
   }
 };
 #endif // TENSORFLOW_USE_SYCL

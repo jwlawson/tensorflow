@@ -109,7 +109,7 @@ struct SpatialConvolutionBackwardKernel {
                   int kernel_rows, int kernel_cols, int row_stride,
                   int col_stride) {
     // Need to swap row/col when calling Eigen.
-    kernel_backward.device(d) = Eigen::SpatialConvolutionBackwardKernel(
+    kernel_backward.device(d) += Eigen::SpatialConvolutionBackwardKernel(
         input, output_backward, kernel_cols, kernel_rows, col_stride,
         row_stride);
   }

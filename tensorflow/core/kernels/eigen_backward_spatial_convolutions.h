@@ -71,22 +71,22 @@ EIGEN_ALWAYS_INLINE static const typename internal::conditional<
                         typename internal::traits<OutputBackward>::Index, 4>,
                     const TensorReverseOp<const ReverseColMajor,
                                           const Kernel> > > >,
-            const TensorReshapingOp<
+            const Eigen::TensorForcedEvalOp<const TensorReshapingOp<
                 const DSizes<typename internal::traits<OutputBackward>::Index,
                              2>,
                 const TensorImagePatchOp<Dynamic, Dynamic,
-                                         const OutputBackward> > > >,
+                                         const OutputBackward> > > > >,
     TensorReshapingOp<
         const DSizes<typename internal::traits<OutputBackward>::Index,
                      internal::traits<OutputBackward>::NumDimensions>,
         const TensorContractionOp<
             const array<
                 IndexPair<typename internal::traits<OutputBackward>::Index>, 1>,
-            const TensorReshapingOp<
+            const Eigen::TensorForcedEvalOp<const TensorReshapingOp<
                 const DSizes<typename internal::traits<OutputBackward>::Index,
                              2>,
                 const TensorImagePatchOp<Dynamic, Dynamic,
-                                         const OutputBackward> >,
+                                         const OutputBackward> > >,
             const Eigen::TensorForcedEvalOp<const TensorReshapingOp<
                 const DSizes<typename internal::traits<OutputBackward>::Index,
                              2>,
@@ -275,7 +275,7 @@ SpatialConvolutionBackwardInput(
                       kernelRows, kernelCols, 1, 1, row_in_stride,
                       col_in_stride, row_stride, col_stride, padding_top,
                       padding_bottom, padding_left, padding_right, OutScalar(0))
-                  .reshape(pre_contract_dims),
+                  .reshape(pre_contract_dims).eval(),
               contract_dims)
           .reshape(post_contract_dims),
       output_backward
@@ -283,7 +283,7 @@ SpatialConvolutionBackwardInput(
                                  col_in_stride, row_stride, col_stride,
                                  padding_top, padding_bottom, padding_left,
                                  padding_right, OutScalar(0))
-          .reshape(pre_contract_dims)
+          .reshape(pre_contract_dims).eval()
           .contract(kernel.reverse(kernel_reverse)
                         .shuffle(kernel_shuffle)
                         .reshape(kernel_dims)
@@ -327,26 +327,29 @@ EIGEN_ALWAYS_INLINE static const typename internal::conditional<
             const TensorReshapingOp<
                 const DSizes<typename internal::traits<Input>::Index, 2>,
                 const OutputBackward>,
-            const TensorShufflingOp<
+            const Eigen::TensorForcedEvalOp<const TensorShufflingOp<
                 const array<typename internal::traits<OutputBackward>::Index,
                             2>,
                 const TensorReshapingOp<
                     const DSizes<typename internal::traits<Input>::Index, 2>,
                     const TensorImagePatchOp<Dynamic, Dynamic,
-                                             const Input> > > > >,
-    TensorReshapingOp<
-        const DSizes<typename internal::traits<Input>::Index, 4>,
-        const TensorContractionOp<
-            const array<IndexPair<typename internal::traits<Input>::Index>, 1>,
-            const TensorShufflingOp<
-                const array<typename internal::traits<OutputBackward>::Index,
-                            2>,
+                                             const Input> > > > > >,
+        TensorReshapingOp<
+            const DSizes<typename internal::traits<Input>::Index, 4>,
+            const TensorContractionOp<
+                const array<IndexPair<typename internal::traits<Input>::Index>,
+                            1>,
+                const Eigen::TensorForcedEvalOp<const TensorShufflingOp<
+                    const array<
+                        typename internal::traits<OutputBackward>::Index, 2>,
+                    const TensorReshapingOp<
+                        const DSizes<typename internal::traits<Input>::Index,
+                                     2>,
+                        const TensorImagePatchOp<Dynamic, Dynamic,
+                                                 const Input> > > >,
                 const TensorReshapingOp<
                     const DSizes<typename internal::traits<Input>::Index, 2>,
-                    const TensorImagePatchOp<Dynamic, Dynamic, const Input> > >,
-            const TensorReshapingOp<
-                const DSizes<typename internal::traits<Input>::Index, 2>,
-                const OutputBackward> > > >::type
+                    const OutputBackward> > > >::type
 SpatialConvolutionBackwardKernel(
     const Input& input, const OutputBackward& output_backward,
     typename internal::traits<Input>::Index kernelRows,
@@ -483,7 +486,7 @@ SpatialConvolutionBackwardKernel(
                       row_in_stride, col_in_stride, 1, 1, padding_top,
                       padding_bottom, padding_left, padding_right, OutScalar(0))
                   .reshape(pre_contract_dims)
-                  .shuffle(shuffle_dims),
+                  .shuffle(shuffle_dims).eval(),
               contract_dims)
           .reshape(kernel_dims),
       input
@@ -492,7 +495,7 @@ SpatialConvolutionBackwardKernel(
                                  padding_top, padding_bottom, padding_left,
                                  padding_right, OutScalar(0))
           .reshape(pre_contract_dims)
-          .shuffle(shuffle_dims)
+          .shuffle(shuffle_dims).eval()
           .contract(output_backward.reshape(output_dims), contract_dims)
           .reshape(kernel_dims));
 }

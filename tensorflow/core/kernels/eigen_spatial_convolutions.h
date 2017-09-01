@@ -913,22 +913,25 @@ EIGEN_DEVICE_FUNC
                 const TensorReshapingOp<
                     const DSizes<typename internal::traits<Input>::Index, 2>,
                     const Kernel>,
-                const TensorReshapingOp<
+                const Eigen::TensorForcedEvalOp<const TensorReshapingOp<
                     const DSizes<typename internal::traits<Input>::Index, 2>,
                     const TensorImagePatchOp<Dynamic, Dynamic,
-                                             const Input> > > >,
-        TensorReshapingOp<
-            const DSizes<typename internal::traits<Input>::Index,
-                         internal::traits<Input>::NumDimensions>,
-            const TensorContractionOp<
-                const array<IndexPair<typename internal::traits<Input>::Index>,
-                            1>,
-                const TensorReshapingOp<
-                    const DSizes<typename internal::traits<Input>::Index, 2>,
-                    const TensorImagePatchOp<Dynamic, Dynamic, const Input> >,
-                const TensorReshapingOp<
-                    const DSizes<typename internal::traits<Input>::Index, 2>,
-                    const Kernel> > > >::type
+                                             const Input> > > > >,
+            TensorReshapingOp<
+                const DSizes<typename internal::traits<Input>::Index,
+                             internal::traits<Input>::NumDimensions>,
+                const TensorContractionOp<
+                    const array<
+                        IndexPair<typename internal::traits<Input>::Index>, 1>,
+                    const Eigen::TensorForcedEvalOp<const TensorReshapingOp<
+                        const DSizes<typename internal::traits<Input>::Index,
+                                     2>,
+                        const TensorImagePatchOp<Dynamic, Dynamic,
+                                                 const Input> > >,
+                    const TensorReshapingOp<
+                        const DSizes<typename internal::traits<Input>::Index,
+                                     2>,
+                        const Kernel> > > >::type
     SpatialConvolution(const Input& input, const Kernel& kernel,
                        const DenseIndex row_stride = 1,
                        const DenseIndex col_stride = 1,
@@ -1056,13 +1059,13 @@ EIGEN_DEVICE_FUNC
                         .extract_image_patches(
                             kernelRows, kernelCols, row_stride, col_stride,
                             row_in_stride, col_in_stride, padding_type)
-                        .reshape(pre_contract_dims),
+                        .reshape(pre_contract_dims).eval(),
                     contract_dims)
           .reshape(post_contract_dims),
       input
           .extract_image_patches(kernelRows, kernelCols, row_stride, col_stride,
                                  row_in_stride, col_in_stride, padding_type)
-          .reshape(pre_contract_dims)
+          .reshape(pre_contract_dims).eval()
           .contract(kernel.reshape(kernel_dims), contract_dims)
           .reshape(post_contract_dims));
 }
