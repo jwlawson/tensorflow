@@ -73,10 +73,13 @@ def main():
   bc_out = filename + '.sycl'
 
   # strip asan for the device
-  computecpp_device_compiler_flags = ['-DTENSORFLOW_USE_SYCL', '-DEIGEN_USE_SYCL=1', '-sycl-compress-name', '-Wno-unused-variable', '-Wno-c++11-narrowing',
-                                      '-I', COMPUTECPP_INCLUDE, '-isystem', COMPUTECPP_INCLUDE,
-                                      '-std=c++11', '-sycl', '-emit-llvm', '-no-serial-memop',
-                                      '-Xclang', '-cl-denorms-are-zero', '-Xclang', '-cl-fp32-correctly-rounded-divide-sqrt']
+  computecpp_device_compiler_flags = [
+      '-DTENSORFLOW_USE_SYCL', '-DEIGEN_USE_SYCL=1',
+      '-DEIGEN_DONT_VECTORIZE_SYCL=1',
+      '-sycl-compress-name', '-Wno-unused-variable', '-Wno-c++11-narrowing',
+      '-I', COMPUTECPP_INCLUDE, '-isystem', COMPUTECPP_INCLUDE,
+      '-std=c++11', '-sycl', '-emit-llvm', '-no-serial-memop',
+      '-Xclang', '-cl-denorms-are-zero', '-Xclang', '-cl-fp32-correctly-rounded-divide-sqrt']
   # disable flags enabling SIMD instructions
   computecpp_device_compiler_flags += [flag for flag in compiler_flags if \
     not any(x in flag.lower() for x in ('-fsanitize', '-fno-canonical-system-headers', '=native', '=core2', 'msse', 'vectorize', 'mavx', 'mmmx', 'm3dnow', 'fma'))]
@@ -86,7 +89,11 @@ def main():
     # dont want that in case of compiling with computecpp first
     host_compiler_flags = [flag for flag in compiler_flags if (not flag.startswith(('-MF', '-MD',)) and not '.d' in flag)]
     host_compiler_flags[host_compiler_flags.index('-c')] = "--include"
-    host_compiler_flags = ['-DTENSORFLOW_USE_SYCL', '-DEIGEN_USE_SYCL=1', '-xc++', '-Wno-unused-variable', '-I', COMPUTECPP_INCLUDE, '-c', bc_out] + host_compiler_flags
+    host_compiler_flags = [
+        '-DTENSORFLOW_USE_SYCL', '-DEIGEN_USE_SYCL=1',
+        '-DEIGEN_DONT_VECTORIZE_SYCL=1',
+        '-xc++', '-Wno-unused-variable', '-I', COMPUTECPP_INCLUDE, '-c', bc_out
+    ] + host_compiler_flags
     x = call([CPU_CXX_COMPILER] + host_compiler_flags)
   return x
 
