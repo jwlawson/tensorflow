@@ -1,18 +1,7 @@
-/* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-==============================================================================*/
-
+/*
+ * Copyright 2017 John Lawson, Codeplay Software.
+ * All rights reserved.
+ */
 #ifndef TENSORFLOW_USE_SYCL
 #error This file should only be included when compiling with SYCL support
 #endif
@@ -24,229 +13,14 @@ limitations under the License.
 
 #include "tensorflow/core/kernels/conv_grad_ops.h"
 
+#include "tensorflow/core/kernels/conv_ops_sycl_common.h"
+#include "tensorflow/core/kernels/conv_ops_winograd_sycl.h"
+
 namespace tensorflow {
 typedef Eigen::SyclDevice SYCLDevice;
 // Forward declarations needed for later specializations.
 template <typename Device, typename T>
 struct LaunchConv2DOp;
-/**
- * Helper function to provide the ratio of two integers, always rounded up. If
- * the numerator is negative then we assume that the rounded ratio will be
- * zero, otherwise we need to ensure that the value is rounded up rather
- * than down.
- */
-template <typename IntegerType>
-inline TF_ATTRIBUTE_ALWAYS_INLINE IntegerType
-RoundRatioUpAboveZero(const IntegerType num, const IntegerType div) {
-  return num < 0 ? 0 : (num + div - 1) / div;
-}
-template <typename IntegerType>
-inline TF_ATTRIBUTE_ALWAYS_INLINE IntegerType
-RoundUpToNearestMultiple(const IntegerType val, const IntegerType multiplier) {
-  const IntegerType diff = val % multiplier;
-  return val + (multiplier - diff);
-}
-
-struct SYCL2DWindow {
-  using Index = int;
-
-  const Index rstart;
-  const Index rend;
-  const Index firstr;
-
-  const Index cstart;
-  const Index cend;
-  const Index firstc;
-
-  const Index feature;
-  const Index batch;
-};
-struct SYCL2DKernelWindow {
-  using Index = int;
-
-  const Index rstart;
-  const Index rend;
-  const Index firstr;
-
-  const Index cstart;
-  const Index cend;
-  const Index firstc;
-
-  const Index feature;
-  const Index channel;
-};
-struct SYCLConv2DParams {
-  using Index = int;
-
-  template <typename _Index>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE SYCLConv2DParams(
-      const _Index channels, const _Index features, const _Index batch,
-      const _Index in_rows, const _Index in_cols, const _Index window_rows,
-      const _Index window_cols, const _Index stride_rows,
-      const _Index stride_cols, const _Index out_rows, const _Index out_cols,
-      const _Index pad_rows, const _Index pad_cols)
-      :
-
-        channels_{static_cast<Index>(channels)},
-        features_{static_cast<Index>(features)},
-        batch_{static_cast<Index>(batch)},
-        in_rows_{static_cast<Index>(in_rows)},
-        in_cols_{static_cast<Index>(in_cols)},
-        window_rows_{static_cast<Index>(window_rows)},
-        window_cols_{static_cast<Index>(window_cols)},
-        stride_rows_{static_cast<Index>(stride_rows)},
-        stride_cols_{static_cast<Index>(stride_cols)},
-        out_rows_{static_cast<Index>(out_rows)},
-        out_cols_{static_cast<Index>(out_cols)},
-        pad_rows_{static_cast<Index>(pad_rows)},
-        pad_cols_{static_cast<Index>(pad_cols)} {}
-
-  /* The number of input channels. */
-  const Index channels_;
-  /* The number of output feature channels. */
-  const Index features_;
-  const Index batch_;
-
-  const Index in_rows_;
-  const Index in_cols_;
-
-  const Index window_rows_;
-  const Index window_cols_;
-
-  const Index stride_rows_;
-  const Index stride_cols_;
-
-  const Index out_rows_;
-  const Index out_cols_;
-
-  const Index pad_rows_;
-  const Index pad_cols_;
-
-  /**
-   * Get the index in the kernel tensor for a particular channel, row and
-   * column.
-   */
-  inline TF_ATTRIBUTE_ALWAYS_INLINE Index kernel_index(const Index channel,
-                                                       const Index feature,
-                                                       const Index i,
-                                                       const Index j) const {
-    return (((i * window_cols_) + j) * channels_ + channel) * features_ +
-           feature;
-  }
-  /**
-   * Get the index in the kernel tensor for the kernel backprop for a
-   * particular channel, row and column. Here we have to mirror the kernel
-   * indices to match how the backprop is ocmputed.
-   */
-  inline TF_ATTRIBUTE_ALWAYS_INLINE Index backprop_index(const Index channel,
-                                                         const Index feature,
-                                                         const Index i,
-                                                         const Index j) const {
-    const Index mirrored_row = window_rows_ - i - 1;
-    const Index mirrored_col = window_cols_ - j - 1;
-    return ((mirrored_row * window_cols_ + mirrored_col) * channels_ +
-            channel) *
-               features_ +
-           feature;
-  }
-  /**
-   * For the filter backprop we are using the output tensor as the filter of
-   * the convolution, which has dimesnsions NHWC, rather than the fiter
-   * dimensions HWCF, so the kernel index is computed in a different way.
-   */
-  inline TF_ATTRIBUTE_ALWAYS_INLINE Index
-  filter_kernel_index(const Index batch, const Index i, const Index j,
-                      const Index feature) const {
-    const Index filter_rows = RoundRatioUpAboveZero(window_rows_, stride_rows_);
-    const Index filter_cols = RoundRatioUpAboveZero(window_cols_, stride_cols_);
-    return ((batch * filter_rows + i) * filter_cols + j) * features_ + feature;
-  }
-  /**
-   * Get the window in the input tensor which corresponds to the specified
-   * output index.
-   *
-   * NOTE: The index types used here must be signed to ensure that the padding
-   * is correctly calculated.
-   */
-  inline TF_ATTRIBUTE_ALWAYS_INLINE SYCL2DWindow
-  input_window_from_output(const Index index) const {
-    Index batch = index;
-    const Index feature = batch % features_;
-    batch /= features_;
-
-    Index cstart = (batch % out_cols_) * stride_cols_ - pad_cols_;
-    const Index cend = std::min(cstart + window_cols_, in_cols_);
-    const Index firstc = cstart < 0 ? -cstart : 0;
-    cstart = std::max(cstart, static_cast<Index>(0));
-    batch /= out_cols_;
-
-    Index rstart = (batch % out_rows_) * stride_rows_ - pad_rows_;
-    const Index rend = std::min(rstart + window_rows_, in_rows_);
-    const Index firstr = rstart < 0 ? -rstart : 0;
-    rstart = std::max(rstart, static_cast<Index>(0));
-    batch /= out_rows_;
-
-    return {rstart, rend, firstr, cstart, cend, firstc, feature, batch};
-  }
-  inline TF_ATTRIBUTE_ALWAYS_INLINE SYCL2DWindow
-  output_window_from_input(const Index index) const {
-    Index n = index;
-    const Index d = n % channels_;
-    n /= channels_;
-
-    // c is the index in the padded output tensor (ie with lots of extra zeros),
-    // but without the first padding. first_padded_c adds this extra padding.
-    const Index c = (n % in_cols_) + pad_cols_;
-    const Index first_padded_c = c - window_cols_ + 1;
-    // The first and last output indices affected by this input.
-    const Index last_used_c = c / stride_cols_;
-    const Index first_used_c =
-        RoundRatioUpAboveZero(first_padded_c, stride_cols_);
-
-    const Index offset_c = first_used_c * stride_cols_ - first_padded_c;
-    const Index cstart = std::max(first_used_c, static_cast<Index>(0));
-    const Index cend = std::min(last_used_c + 1, out_cols_);
-    n /= in_cols_;
-
-    const Index r = (n % in_rows_) + pad_rows_;
-    const Index last_used_r = r / stride_rows_;
-    const Index first_padded_r = r - window_rows_ + 1;
-    const Index first_used_r =
-        RoundRatioUpAboveZero(first_padded_r, stride_rows_);
-
-    const Index offset_r = first_used_r * stride_rows_ - first_padded_r;
-    const Index rstart = std::max(first_used_r, static_cast<Index>(0));
-    const Index rend = std::min(last_used_r + 1, out_rows_);
-    n /= in_rows_;
-
-    return {rstart, rend, offset_r, cstart, cend, offset_c, d, n};
-  }
-  inline TF_ATTRIBUTE_ALWAYS_INLINE SYCL2DKernelWindow
-  kernel_window_from_output(const Index index) const {
-    Index n = index;
-    const Index feature = n % features_;
-    n /= features_;
-    const Index channel = n % channels_;
-    n /= channels_;
-
-    Index cstart = n % out_cols_ - pad_cols_;
-    const Index cend = std::min(cstart + window_cols_, in_cols_);
-    const Index firstc = cstart < 0 ? -cstart : 0;
-    while (cstart < 0) {
-      cstart += stride_cols_;
-    }
-    n /= out_cols_;
-
-    Index rstart = n - pad_rows_;
-    const Index rend = std::min(rstart + window_rows_, in_rows_);
-    const Index firstr = rstart < 0 ? -rstart : 0;
-    while (rstart < 0) {
-      rstart += stride_rows_;
-    }
-
-    return {rstart, rend, firstr, cstart, cend, firstc, feature, channel};
-  }
-};
 namespace functor {
 /**
  * SYCL kernel for naive convolution computation.
@@ -281,17 +55,22 @@ struct Conv2DSYCL {
     const Index index = item.get(0);
 
     if (index < n_elems_) {
-      SYCL2DWindow w = p_.input_window_from_output(index);
+      const SYCL2DWindow w = p_.input_window_from_output(index);
 
       T out_val = static_cast<T>(0);
       const T* input_data_n =
           input_data + w.batch * p_.in_cols_ * p_.in_rows_ * p_.channels_;
-      for (Index r = w.rstart, i = w.firstr; r < w.rend; ++r, ++i) {
-        for (Index c = w.cstart, j = w.firstc; c < w.cend; ++c, ++j) {
-          for (Index channel = 0; channel < p_.channels_; ++channel) {
-            const Index idx = (r * p_.in_cols_ + c) * p_.channels_ + channel;
-            const Index k_idx = p_.kernel_index(channel, w.feature, i, j);
-            out_val += input_data_n[idx] * kernel_data[k_idx];
+      for (Index r = w.rstart, i = 0; r < w.rend; ++r, ++i) {
+        if (r >= 0) {
+          for (Index c = w.cstart, j = 0; c < w.cend; ++c, ++j) {
+            if (c >= 0) {
+              for (Index channel = 0; channel < p_.channels_; ++channel) {
+                const Index idx =
+                    (r * p_.in_cols_ + c) * p_.channels_ + channel;
+                const Index k_idx = p_.kernel_index(channel, w.feature, i, j);
+                out_val += input_data_n[idx] * kernel_data[k_idx];
+              }
+            }
           }
         }
       }
@@ -334,18 +113,18 @@ struct Conv2DBackpropSYCL {
     const Index index = item.get(0);
 
     if (index < n_elems_) {
-      SYCL2DWindow w = p_.output_window_from_input(index);
+      const SYCL2DWindow w = p_.output_window_from_input(index);
 
       T out_val = static_cast<T>(0);
       const T* input_data_n =
-          input_data + w.batch * p_.out_cols_ * p_.out_rows_ * p_.features_;
+          input_data + w.batch * p_.in_cols_ * p_.in_rows_ * p_.channels_;
       for (Index r = w.rstart, i = w.firstr; r < w.rend;
            ++r, i += p_.stride_rows_) {
         for (Index c = w.cstart, j = w.firstc; c < w.cend;
              ++c, j += p_.stride_cols_) {
-          for (Index feature = 0; feature < p_.features_; ++feature) {
-            const Index idx = (r * p_.out_cols_ + c) * p_.features_ + feature;
-            const Index k_idx = p_.backprop_index(w.feature, feature, i, j);
+          for (Index channel = 0; channel < p_.channels_; ++channel) {
+            const Index idx = (r * p_.in_cols_ + c) * p_.channels_ + channel;
+            const Index k_idx = p_.backprop_index(w.feature, channel, i, j);
             out_val += input_data_n[idx] * kernel_data[k_idx];
           }
         }
@@ -394,18 +173,22 @@ struct Conv2DBackpropFilterSYCL {
     const Index index = item.get(0);
 
     if (index < n_elems_) {
-      SYCL2DKernelWindow w = p_.kernel_window_from_output(index);
+      const SYCL2DKernelWindow w = p_.kernel_window_from_output(index);
 
       T out_val = static_cast<T>(0);
       const T* input_data_n = input_data;
       for (Index b = 0; b < p_.batch_; b++) {
-        for (Index r = w.rstart, i = w.firstr; r < w.rend;
-             ++i, r += p_.stride_rows_) {
-          for (Index c = w.cstart, j = w.firstc; c < w.cend;
-               ++j, c += p_.stride_cols_) {
-            const Index idx = (r * p_.in_cols_ + c) * p_.channels_ + w.channel;
-            const Index k_idx = p_.filter_kernel_index(b, i, j, w.feature);
-            out_val += input_data_n[idx] * kernel_data[k_idx];
+        for (Index r = w.rstart, i = 0; r < w.rend; ++i, r += p_.stride_rows_) {
+          if (r >= 0) {
+            for (Index c = w.cstart, j = 0; c < w.cend;
+                 ++j, c += p_.stride_cols_) {
+              if (c >= 0) {
+                const Index idx =
+                    (r * p_.in_cols_ + c) * p_.channels_ + w.channel;
+                const Index k_idx = p_.filter_kernel_index(b, i, j, w.feature);
+                out_val += input_data_n[idx] * kernel_data[k_idx];
+              }
+            }
           }
         }
         input_data_n += p_.in_cols_ * p_.in_rows_ * p_.channels_;
@@ -458,15 +241,15 @@ struct LaunchConv2DKernel {
   }
 };
 template <typename T>
-struct LaunchConv2DSYCL : public LaunchConv2DKernel<T, functor::Conv2DSYCL<T>> {
-};
+struct LaunchConv2DSYCL final
+    : public LaunchConv2DKernel<T, functor::Conv2DSYCL<T>> {};
 
 template <typename T>
-struct LaunchConv2DBackpropInputSYCL
+struct LaunchConv2DBackpropInputSYCL final
     : public LaunchConv2DKernel<T, functor::Conv2DBackpropSYCL<T>> {};
 
 template <typename T>
-struct LaunchConv2DBackpropFilterSYCL
+struct LaunchConv2DBackpropFilterSYCL final
     : public LaunchConv2DKernel<T, functor::Conv2DBackpropFilterSYCL<T>> {};
 
 template <typename T>
@@ -476,6 +259,12 @@ struct LaunchConv2DOp<SYCLDevice, T> {
                   const Tensor& filter, int64 stride_rows, int64 stride_cols,
                   const Padding& padding, Tensor* output,
                   TensorFormat data_format) {
+    CHECK(data_format == FORMAT_NHWC) << "SYCL convolution implementation only "
+                                         "supports NHWC tensor format.";
+    if (launch_matmul(context, input, filter, stride_rows, stride_cols, padding,
+                      output)) {
+      return;
+    }
     const int64 batch = GetTensorDim(input, data_format, 'N');
     const int64 input_rows = GetTensorDim(input, data_format, 'H');
     const int64 input_cols = GetTensorDim(input, data_format, 'W');
@@ -497,8 +286,79 @@ struct LaunchConv2DOp<SYCLDevice, T> {
                             input_cols,  filter_rows, filter_cols, stride_rows,
                             stride_cols, out_rows,    out_cols,    pad_rows,
                             pad_cols};
+    if (stride_rows == 1 && stride_cols == 1 && filter_rows == 3 &&
+        filter_cols == 1) {
+      LaunchMatmulWinograd<T, 2, 1, 3, 1, ConvType::Forward>::launch(
+          context, output, input, filter, params);
+      return;
+    }
+    if (stride_rows == 1 && stride_cols == 1 && filter_rows == 1 &&
+        filter_cols == 3) {
+      LaunchMatmulWinograd<T, 1, 2, 1, 3, ConvType::Forward>::launch(
+          context, output, input, filter, params);
+      return;
+    }
+    if (stride_rows == 1 && stride_cols == 1 && filter_rows == 3 &&
+        filter_cols == 3) {
+      LaunchMatmulWinograd<T, 2, 2, 3, 3, ConvType::Forward>::launch(
+          context, output, input, filter, params);
+      return;
+    }
 
     LaunchConv2DSYCL<T>::launch(context, output, input, filter, params);
+  }
+
+ private:
+  /**
+   * Check whether the convolution can be computed with a single matrix
+   * multiply. This is the case when the filter is 1x1 or where the filter is
+   * the same size as the input tensor.
+   *
+   * The MatMulConvFunctor used here is defined in
+   * tensorflow/core/kernels/conv_2d.h and just calls Eigen contract.
+   *
+   * Returns true if the convolution has been launched, and false if the
+   * convolution cannot be computed using a matrix multiply.
+   */
+  bool launch_matmul(OpKernelContext* context, const Tensor& input,
+                     const Tensor& filter, int64 stride_rows, int64 stride_cols,
+                     const Padding& padding, Tensor* output) {
+    if (filter.dim_size(0) == 1 && filter.dim_size(1) == 1 &&
+        stride_rows == 1 && stride_cols == 1) {
+      // For 1x1 kernel, the 2D convolution is reduced to matrix
+      // multiplication.
+      int conv_width = 1;
+      for (int i = 0; i < 3; ++i) {
+        conv_width *= output->dim_size(i);
+      }
+
+      Eigen::array<Eigen::IndexPair<Eigen::DenseIndex>, 1> dim_pair;
+      dim_pair[0] = Eigen::IndexPair<Eigen::DenseIndex>(1, 0);
+      functor::MatMulConvFunctor<SYCLDevice, T>()(
+          context->eigen_device<SYCLDevice>(),
+          output->shaped<T, 2>({conv_width, filter.dim_size(3)}),
+          input.shaped<T, 2>({conv_width, filter.dim_size(2)}),
+          filter.shaped<T, 2>({filter.dim_size(2), filter.dim_size(3)}),
+          dim_pair);
+      return true;
+    } else if (filter.dim_size(0) == input.dim_size(1) &&
+               filter.dim_size(1) == input.dim_size(2) && padding == VALID) {
+      // If the input data and filter have the same height/width,
+      // the 2D convolution is reduced to matrix multiplication.
+      const int k =
+          filter.dim_size(0) * filter.dim_size(1) * filter.dim_size(2);
+
+      Eigen::array<Eigen::IndexPair<Eigen::DenseIndex>, 1> dim_pair;
+      dim_pair[0] = Eigen::IndexPair<Eigen::DenseIndex>(1, 0);
+      functor::MatMulConvFunctor<SYCLDevice, T>()(
+          context->eigen_device<SYCLDevice>(),
+          output->shaped<T, 2>({input.dim_size(0), filter.dim_size(3)}),
+          input.shaped<T, 2>({input.dim_size(0), k}),
+          filter.shaped<T, 2>({k, filter.dim_size(3)}), dim_pair);
+      return true;
+    } else {
+      return false;
+    }
   }
 };
 template <typename T>
@@ -508,6 +368,10 @@ struct LaunchConv2DBackpropInputOp<SYCLDevice, T> {
                   const Tensor& filter, int64 stride_rows, int64 stride_cols,
                   const Padding& padding, Tensor* in_backprop,
                   TensorFormat data_format) {
+    if (launch_matmul(context, out_backprop, filter, stride_rows, stride_cols,
+                      padding, in_backprop)) {
+      return;
+    }
     const int64 batch = GetTensorDim(*in_backprop, data_format, 'N');
     const int64 input_rows = GetTensorDim(*in_backprop, data_format, 'H');
     const int64 input_cols = GetTensorDim(*in_backprop, data_format, 'W');
@@ -525,13 +389,84 @@ struct LaunchConv2DBackpropInputOp<SYCLDevice, T> {
                    GetWindowedOutputSize(input_cols, filter_cols, stride_cols,
                                          padding, &out_cols, &pad_cols));
 
-    SYCLConv2DParams params{in_depth,    out_depth,   batch,       input_rows,
-                            input_cols,  filter_rows, filter_cols, stride_rows,
-                            stride_cols, out_rows,    out_cols,    pad_rows,
+    if (stride_rows == 1 && stride_cols == 1 && filter_rows == 3 &&
+        filter_cols == 1) {
+      // We need to change the padding from input padding to output padding for
+      // the winograd matmul kernel. pad_out = filt_size - 1 - pad_in
+      SYCLConv2DParams params{
+          out_depth,   in_depth,     batch,       out_rows,    out_cols,
+          filter_rows, filter_cols,  stride_rows, stride_cols, input_rows,
+          input_cols,  2 - pad_rows, -pad_cols};
+      LaunchMatmulWinograd<T, 2, 1, 3, 1, ConvType::InputBackprop>::launch(
+          context, in_backprop, out_backprop, filter, params);
+      return;
+    }
+    if (stride_rows == 1 && stride_cols == 1 && filter_rows == 1 &&
+        filter_cols == 3) {
+      SYCLConv2DParams params{
+          out_depth,   in_depth,    batch,       out_rows,    out_cols,
+          filter_rows, filter_cols, stride_rows, stride_cols, input_rows,
+          input_cols,  -pad_rows,   2 - pad_cols};
+      LaunchMatmulWinograd<T, 1, 2, 1, 3, ConvType::InputBackprop>::launch(
+          context, in_backprop, out_backprop, filter, params);
+      return;
+    }
+    if (stride_rows == 1 && stride_cols == 1 && filter_rows == 3 &&
+        filter_cols == 3) {
+      SYCLConv2DParams params{
+          out_depth,   in_depth,     batch,       out_rows,    out_cols,
+          filter_rows, filter_cols,  stride_rows, stride_cols, input_rows,
+          input_cols,  2 - pad_rows, 2 - pad_cols};
+      LaunchMatmulWinograd<T, 2, 2, 3, 3, ConvType::InputBackprop>::launch(
+          context, in_backprop, out_backprop, filter, params);
+      return;
+    }
+
+    SYCLConv2DParams params{out_depth,   in_depth,    batch,       out_rows,
+                            out_cols,    filter_rows, filter_cols, stride_rows,
+                            stride_cols, input_rows,  input_cols,  pad_rows,
                             pad_cols};
 
     LaunchConv2DBackpropInputSYCL<T>::launch(context, in_backprop, out_backprop,
                                              filter, params);
+  }
+
+ private:
+  /**
+   * Check whether the convolution can be computed with a single matrix
+   * multiply. This is the case when the filter is 1x1 or where the filter is
+   * the same size as the input tensor.
+   *
+   * The MatMulConvFunctor used here is defined in
+   * tensorflow/core/kernels/conv_2d.h and just calls Eigen contract.
+   *
+   * Returns true if the convolution has been launched, and false if the
+   * convolution cannot be computed using a matrix multiply.
+   */
+  bool launch_matmul(OpKernelContext* context, const Tensor& out_backprop,
+                     const Tensor& filter, int64 stride_rows, int64 stride_cols,
+                     const Padding& padding, Tensor* in_backprop) {
+    if (filter.dim_size(0) == 1 && filter.dim_size(1) == 1 &&
+        stride_rows == 1 && stride_cols == 1) {
+      // For 1x1 kernel, the 2D convolution is reduced to matrix
+      // multiplication.
+      int conv_width = 1;
+      for (int i = 0; i < 3; ++i) {
+        conv_width *= in_backprop->dim_size(i);
+      }
+
+      Eigen::array<Eigen::IndexPair<Eigen::DenseIndex>, 1> dim_pair;
+      dim_pair[0] = Eigen::IndexPair<Eigen::DenseIndex>(1, 1);
+      functor::MatMulConvFunctor<SYCLDevice, T>()(
+          context->eigen_device<SYCLDevice>(),
+          in_backprop->shaped<T, 2>({conv_width, filter.dim_size(2)}),
+          out_backprop.shaped<T, 2>({conv_width, filter.dim_size(3)}),
+          filter.shaped<T, 2>({filter.dim_size(2), filter.dim_size(3)}),
+          dim_pair);
+      return true;
+    } else {
+      return false;
+    }
   }
 };
 template <typename T>
@@ -541,6 +476,10 @@ struct LaunchConv2DBackpropFilterOp<SYCLDevice, T> {
                   const Tensor& input, int64 stride_rows, int64 stride_cols,
                   const Padding& padding, Tensor* filter_backprop,
                   TensorFormat data_format) {
+    if (launch_matmul(context, out_backprop, input, stride_rows, stride_cols,
+                      padding, filter_backprop)) {
+      return;
+    }
     const int64 batch = GetTensorDim(input, data_format, 'N');
     const int64 input_rows = GetTensorDim(input, data_format, 'H');
     const int64 input_cols = GetTensorDim(input, data_format, 'W');
@@ -568,8 +507,67 @@ struct LaunchConv2DBackpropFilterOp<SYCLDevice, T> {
                             stride_cols, filter_rows, filter_cols, pad_rows,
                             pad_cols};
 
+    if (stride_rows == 1 && stride_cols == 1 && filter_rows == 1 &&
+        filter_cols == 3) {
+      LaunchMatmulWinograd<T, 1, 3, 1, 2, ConvType::FilterBackprop>::launch(
+          context, filter_backprop, input, out_backprop, params);
+      return;
+    }
+    if (stride_rows == 1 && stride_cols == 1 && filter_rows == 3 &&
+        filter_cols == 1) {
+      LaunchMatmulWinograd<T, 3, 1, 2, 1, ConvType::FilterBackprop>::launch(
+          context, filter_backprop, input, out_backprop, params);
+      return;
+    }
+    if (stride_rows == 1 && stride_cols == 1 && filter_rows == 3 &&
+        filter_cols == 3) {
+      LaunchMatmulWinograd<T, 3, 3, 2, 2, ConvType::FilterBackprop>::launch(
+          context, filter_backprop, input, out_backprop, params);
+      return;
+    }
+
     LaunchConv2DBackpropFilterSYCL<T>::launch(context, filter_backprop, input,
                                               out_backprop, params);
+  }
+
+ private:
+  /**
+   * Check whether the convolution can be computed with a single matrix
+   * multiply. This is the case when the filter is 1x1 or where the filter is
+   * the same size as the input tensor.
+   *
+   * The MatMulConvFunctor used here is defined in
+   * tensorflow/core/kernels/conv_2d.h and just calls Eigen contract.
+   *
+   * Returns true if the convolution has been launched, and false if the
+   * convolution cannot be computed using a matrix multiply.
+   */
+  bool launch_matmul(OpKernelContext* context, const Tensor& out_backprop,
+                     const Tensor& input, int64 stride_rows, int64 stride_cols,
+                     const Padding& padding, Tensor* filter_backprop) {
+    if (filter_backprop->dim_size(0) == 1 &&
+        filter_backprop->dim_size(1) == 1 && stride_rows == 1 &&
+        stride_cols == 1) {
+      // For 1x1 kernel, the 2D convolution is reduced to matrix
+      // multiplication.
+      int conv_width = 1;
+      for (int i = 0; i < 3; ++i) {
+        conv_width *= input.dim_size(i);
+      }
+
+      Eigen::array<Eigen::IndexPair<Eigen::DenseIndex>, 1> dim_pair;
+      dim_pair[0] = Eigen::IndexPair<Eigen::DenseIndex>(0, 0);
+      functor::MatMulConvFunctor<SYCLDevice, T>()(
+          context->eigen_device<SYCLDevice>(),
+          filter_backprop->shaped<T, 2>(
+              {filter_backprop->dim_size(2), filter_backprop->dim_size(3)}),
+          input.shaped<T, 2>({conv_width, filter_backprop->dim_size(2)}),
+          out_backprop.shaped<T, 2>({conv_width, filter_backprop->dim_size(3)}),
+          dim_pair);
+      return true;
+    } else {
+      return false;
+    }
   }
 };
 }  // namespace tensorflow
