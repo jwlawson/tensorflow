@@ -92,6 +92,7 @@ enum class algorithm {
   winograd_3x3,
   im2col,
   direct,
+  direct_tiled,
   not_supported,
 };
 template <typename T, typename backend_type, algorithm Algo, ConvType CType>
