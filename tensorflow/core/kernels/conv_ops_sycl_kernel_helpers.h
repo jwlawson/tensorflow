@@ -115,7 +115,7 @@ inline TF_ATTRIBUTE_ALWAYS_INLINE TensorIndex4D unflatten4d(
   const Index s012_idx = s0123_idx / div_size_3;
   const Index s3 = s0123_idx - s012_idx * size_3;
   const Index s01_idx = s012_idx / div_size_2;
-  const Index s2 = s012_idx - s012_idx * size_2;
+  const Index s2 = s012_idx - s01_idx * size_2;
   const Index s0 = s01_idx / div_size_1;
   const Index s1 = s01_idx - s0 * size_1;
 
