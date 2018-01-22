@@ -39,6 +39,20 @@ class winograd_selector final : public algorithm_selector {
     return algorithm::not_supported;
   }
 };
+class direct_tiled_selector final : public algorithm_selector {
+ public:
+  algorithm get_selection(SYCLConv2DParams const& params) override {
+    if (params.window_rows_ == 3 && params.window_cols_ == 3 &&
+        params.stride_rows_ == 1 && params.stride_cols_ == 1) {
+      return algorithm::direct_tiled;
+    }
+    if (params.window_rows_ == 5 && params.window_cols_ == 5 &&
+        params.stride_rows_ == 1 && params.stride_cols_ == 1) {
+      return algorithm::direct_tiled;
+    }
+    return algorithm::not_supported;
+  }
+};
 class matmul_selector final : public algorithm_selector {
  public:
   algorithm get_selection(SYCLConv2DParams const& params) override {
