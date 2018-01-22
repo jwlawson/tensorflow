@@ -341,7 +341,10 @@ BM_ConvFloatFwd(BATCH, 27, 27,  64, 192, 5, 5, 1, SAME, alexnet2_b##BATCH); \
 BM_ConvFloatFwd(BATCH, 13, 13, 192, 384, 3, 3, 1, SAME, alexnet3_b##BATCH); \
 BM_ConvFloatFwd(BATCH, 13, 13, 384, 384, 3, 3, 1, SAME, alexnet4_b##BATCH); \
 BM_ConvFloatFwd(BATCH, 13, 13, 384, 256, 3, 3, 1, SAME, alexnet5_b##BATCH); \
+BM_ConvFloatFwd(BATCH, 224, 224,   3,  64, 3, 3, 1, SAME, vgg1_b##BATCH); \
+BM_ConvFloatFwd(BATCH, 224, 224,  64,  64, 3, 3, 1, SAME, vgg2_b##BATCH); \
 BM_ConvFloatFwd(BATCH, 112, 112,  64, 128, 3, 3, 1, SAME, vgg3_b##BATCH); \
+BM_ConvFloatFwd(BATCH, 112, 112, 128, 128, 3, 3, 1, SAME, vgg4_b##BATCH); \
 BM_ConvFloatFwd(BATCH, 56, 56, 128, 256, 3, 3, 1, SAME, vgg5_b##BATCH); \
 BM_ConvFloatFwd(BATCH, 56, 56, 256, 256, 3, 3, 1, SAME, vgg6_b##BATCH); \
 BM_ConvFloatFwd(BATCH, 56, 56, 256, 256, 3, 3, 1, SAME, vgg7_b##BATCH); \
@@ -351,10 +354,6 @@ BM_ConvFloatFwd(BATCH, 28, 28, 512, 512, 3, 3, 1, SAME, vgg10_b##BATCH); \
 BM_ConvFloatFwd(BATCH, 14, 14, 512, 512, 3, 3, 1, SAME, vgg11_b##BATCH); \
 BM_ConvFloatFwd(BATCH, 14, 14, 512, 512, 3, 3, 1, SAME, vgg12_b##BATCH); \
 BM_ConvFloatFwd(BATCH, 14, 14, 512, 512, 3, 3, 1, SAME, vgg13_b##BATCH);
-// These cause mem alloc failures at the moment.
-//BM_ConvFloatFwd(BATCH, 224, 224,   3,  64, 3, 3, 1, SAME, vgg1_b##BATCH); \
-//BM_ConvFloatFwd(BATCH, 224, 224,  64,  64, 3, 3, 1, SAME, vgg2_b##BATCH); \
-//BM_ConvFloatFwd(BATCH, 112, 112, 128, 128, 3, 3, 1, SAME, vgg4_b##BATCH); \
 
 BM_Models(1);
 BM_Models(32);
@@ -442,11 +441,16 @@ BM_ConvFloatBkInAndFilter(BATCH, 7, 7,  512,  512, 3, 3, 1, SAME, resnet48_b##BA
 BM_ConvFloatBkInAndFilter(BATCH, 7, 7,  512, 2048, 1, 1, 1, SAME, resnet49_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 7, 7, 2048,  512, 1, 1, 1, SAME, resnet50_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 7, 7,  512,  512, 3, 3, 1, SAME, resnet51_b##BATCH); \
+BM_ConvFloatBkInAndFilter(BATCH, 7, 7,  512, 2048, 1, 1, 1, SAME, resnet52_b##BATCH); \
+BM_ConvFloatBkInAndFilter(BATCH, 227, 227, 3, 64, 11, 11, 4, SAME, alexnet1_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 27, 27,  64, 192, 5, 5, 1, SAME, alexnet2_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 13, 13, 192, 384, 3, 3, 1, SAME, alexnet3_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 13, 13, 384, 384, 3, 3, 1, SAME, alexnet4_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 13, 13, 384, 256, 3, 3, 1, SAME, alexnet5_b##BATCH); \
+BM_ConvFloatBkInAndFilter(BATCH, 224, 224,   3,  64, 3, 3, 1, SAME, vgg1_b##BATCH); \
+BM_ConvFloatBkInAndFilter(BATCH, 224, 224,  64,  64, 3, 3, 1, SAME, vgg2_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 112, 112,  64, 128, 3, 3, 1, SAME, vgg3_b##BATCH); \
+BM_ConvFloatBkInAndFilter(BATCH, 112, 112, 128, 128, 3, 3, 1, SAME, vgg4_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 56, 56, 128, 256, 3, 3, 1, SAME, vgg5_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 56, 56, 256, 256, 3, 3, 1, SAME, vgg6_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 56, 56, 256, 256, 3, 3, 1, SAME, vgg7_b##BATCH); \
@@ -456,14 +460,9 @@ BM_ConvFloatBkInAndFilter(BATCH, 28, 28, 512, 512, 3, 3, 1, SAME, vgg10_b##BATCH
 BM_ConvFloatBkInAndFilter(BATCH, 14, 14, 512, 512, 3, 3, 1, SAME, vgg11_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 14, 14, 512, 512, 3, 3, 1, SAME, vgg12_b##BATCH); \
 BM_ConvFloatBkInAndFilter(BATCH, 14, 14, 512, 512, 3, 3, 1, SAME, vgg13_b##BATCH);
-//BM_ConvFloatBkInAndFilter(BATCH, 224, 224,   3,  64, 3, 3, 1, SAME, vgg1_b##BATCH); \
-//BM_ConvFloatBkInAndFilter(BATCH, 224, 224,  64,  64, 3, 3, 1, SAME, vgg2_b##BATCH); \
-//BM_ConvFloatBkInAndFilter(BATCH, 112, 112, 128, 128, 3, 3, 1, SAME, vgg4_b##BATCH); \
-//BM_ConvFloatBkInAndFilter(BATCH, 227, 227, 3, 64, 11, 11, 4, SAME, alexnet1_b##BATCH); \
-//BM_ConvFloatBkInAndFilter(BATCH, 7, 7,  512, 2048, 1, 1, 1, SAME, resnet52_b##BATCH); \
 
 BM_Models_bk(1);
-//BM_Models_bk(32);
+BM_Models_bk(32);
 
 #define BM_ConvFloatBkFCPU(BS, R, C, ID, OD, KR, KC, TH, LABEL)                \
   static void                                                                  \
