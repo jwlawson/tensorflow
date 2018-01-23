@@ -90,6 +90,8 @@ template <typename Selector>
 using matmul_then = fallback_selector<matmul_selector, Selector>;
 template <typename Selector>
 using winograd_then = fallback_selector<winograd_selector, Selector>;
+template <typename Selector>
+using direct_tiled_then = fallback_selector<direct_tiled_selector, Selector>;
 using default_selector = matmul_then<winograd_then<im2col_selector>>;
 }  // namespace tensorflow
 #endif  // TENSORFLOW_KERNELS_CONV_OPS_SYCL_SELECTORS_H_
