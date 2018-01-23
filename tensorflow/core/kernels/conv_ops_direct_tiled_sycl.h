@@ -21,7 +21,6 @@ inline SYCLConv2DParams get_kernel_params(SYCLConv2DParams params) {
 template <>
 inline SYCLConv2DParams get_kernel_params<ConvType::InputBackprop>(
     SYCLConv2DParams params) {
-  std::swap(params.channels_, params.features_);
   // We need to change the padding from input padding to output padding for
   // the winograd matmul kernel. pad_out = filt_size - 1 - pad_in
   params.pad_rows_ = params.window_rows_ - 1 - params.pad_rows_;
@@ -42,23 +41,29 @@ inline SYCLConv2DParams get_kernel_params<ConvType::FilterBackprop>(
   params.window_cols_ = window_cols;
   return params;
 }
-template <ConvType CType, int tile_rows, int tile_cols>
+template <ConvType CType, int tile_rows, int tile_cols,
+          int channel_vector_width, int feature_vector_width>
 struct tiled_output_size {
   static size_t get(SYCLConv2DParams const& params) { return 0; }
 };
-template <int tile_rows, int tile_cols>
-struct tiled_output_size<ConvType::Forward, tile_rows, tile_cols> {
+template <int tile_rows, int tile_cols, int channel_vector_width,
+          int feature_vector_width>
+struct tiled_output_size<ConvType::Forward, tile_rows, tile_cols,
+                         channel_vector_width, feature_vector_width> {
   static size_t get(SYCLConv2DParams const& params) {
     return params.batch_ * RoundRatioUpAboveZero(params.out_rows_, tile_rows) *
            RoundRatioUpAboveZero(params.out_cols_, tile_cols) *
-           params.features_;
+           params.features_ / feature_vector_width;
   }
 };
-template <int tile_rows, int tile_cols>
-struct tiled_output_size<ConvType::InputBackprop, tile_rows, tile_cols> {
+template <int tile_rows, int tile_cols, int channel_vector_width,
+          int feature_vector_width>
+struct tiled_output_size<ConvType::InputBackprop, tile_rows, tile_cols,
+                         channel_vector_width, feature_vector_width> {
   static size_t get(SYCLConv2DParams const& params) {
     return params.batch_ * RoundRatioUpAboveZero(params.in_rows_, tile_rows) *
-           RoundRatioUpAboveZero(params.in_cols_, tile_cols) * params.channels_;
+           RoundRatioUpAboveZero(params.in_cols_, tile_cols) *
+           params.channels_ / channel_vector_width;
   }
 };
 template <ConvType CType>
@@ -86,23 +91,49 @@ inline bool no_fast_div<ConvType::FilterBackprop>(
 }
 template <ConvType>
 inline bool use_static_conv(SYCLConv2DParams const& params, int const window,
-                            int const stride) {
+                            int const stride, int const channel_vector,
+                            int const feature_vector);
+template <>
+inline bool use_static_conv<ConvType::Forward>(SYCLConv2DParams const& params,
+                                               int const window,
+                                               int const stride,
+                                               int const channel_vector,
+                                               int const feature_vector) {
   return (params.window_cols_ == window && params.window_rows_ == window &&
-          params.stride_rows_ == stride && params.stride_cols_ == stride);
+          params.stride_rows_ == stride && params.stride_cols_ == stride &&
+          params.features_ % feature_vector == 0);
+}
+template <>
+inline bool use_static_conv<ConvType::InputBackprop>(
+    SYCLConv2DParams const& params, int const window, int const stride,
+    int const channel_vector, int const feature_vector) {
+  return (params.window_cols_ == window && params.window_rows_ == window &&
+          params.stride_rows_ == stride && params.stride_cols_ == stride &&
+          params.channels_ % channel_vector == 0);
+}
+template <>
+inline bool use_static_conv<ConvType::FilterBackprop>(
+    SYCLConv2DParams const& params, int const window, int const stride,
+    int const channel_vector, int const feature_vector) {
+  return false;
 }
 template <typename T, ConvType CType, int tile_rows, int tile_cols,
-          bool use_fast_div, int window_rows, int window_cols, int stride>
+          int channel_vector_width, int feature_vector_width, bool use_fast_div,
+          int window_rows, int window_cols, int stride>
 inline bool launch_tiled(Eigen::SyclDevice const& device, T* const output,
                          T const* const input, T const* const filter,
                          SYCLConv2DParams const& params) {
-  using Functor = Conv2DTiledSYCL<T, CType, tile_rows, tile_cols, false,
-                                  window_rows, window_cols, stride>;
+  using Functor =
+      Conv2DTiledSYCL<T, CType, tile_rows, tile_cols, channel_vector_width,
+                      feature_vector_width, use_fast_div, window_rows,
+                      window_cols, stride>;
   static constexpr auto read_mode = Functor::read_mode;
   static constexpr auto write_mode = Functor::write_mode;
-  static constexpr auto max_threads = 1024 * 256;
+  static constexpr auto max_threads = 2048 * 256;
   using Index = int;
   const Index output_size =
-      tiled_output_size<CType, tile_rows, tile_cols>::get(params);
+      tiled_output_size<CType, tile_rows, tile_cols, channel_vector_width,
+                        feature_vector_width>::get(params);
   const Index workgroup_size = device.maxSyclThreadsPerBlock();
   const Index n_threads = std::max(
       RoundUpToNearestMultiple(output_size, workgroup_size), max_threads);
@@ -117,8 +148,7 @@ inline bool launch_tiled(Eigen::SyclDevice const& device, T* const output,
     auto filter_access = filter_buffer.template get_access<read_mode>(cgh);
     auto output_access = output_buffer.template get_access<write_mode>(cgh);
 
-    Functor conv(output_size, kernel_params, input_access, filter_access,
-                 output_access);
+    Functor conv(kernel_params, input_access, filter_access, output_access);
 
     cgh.parallel_for(cl::sycl::range<1>(n_threads), conv);
   });
@@ -132,23 +162,29 @@ struct LaunchConv2DTiled {
   static bool launch(Eigen::SyclDevice const& device, T* const output,
                      T const* const input, T const* const filter,
                      SYCLConv2DParams const& params) {
-#define LAUNCH_TILED_CONV(tile_row, tile_col, use_fast_div, window, stride) \
-  return launch_tiled<T, CType, tile_row, tile_col, use_fast_div, window,   \
-                      window, stride>(device, output, input, filter, params);
-#define LAUNCH_IF_MATCH(params, window, stride, tile_row, tile_col)  \
-  if (use_static_conv<CType>(params, window, stride)) {              \
-    if (CType != ConvType::FilterBackprop) {                         \
-      if (no_fast_div<CType>(params, tile_row, tile_col)) {          \
-        LAUNCH_TILED_CONV(tile_row, tile_col, false, window, stride) \
-      } else {                                                       \
-        LAUNCH_TILED_CONV(tile_row, tile_col, true, window, stride)  \
-      }                                                              \
-    }                                                                \
+#define LAUNCH_TILED_CONV(tile_row, tile_col, channel_vector_width,           \
+                          feature_vector_width, use_fast_div, window, stride) \
+  return launch_tiled<T, CType, tile_row, tile_col, channel_vector_width,     \
+                      feature_vector_width, use_fast_div, window, window,     \
+                      stride>(device, output, input, filter, params);
+#define LAUNCH_IF_MATCH(params, window, stride, tile_row, tile_col,       \
+                        channel_vector, feature_vector)                   \
+  if (use_static_conv<CType>(params, window, stride, channel_vector,      \
+                             feature_vector)) {                           \
+    LAUNCH_TILED_CONV(tile_row, tile_col, channel_vector, feature_vector, \
+                      false, window, stride)                              \
   }
-    LAUNCH_IF_MATCH(params, 3, 1, 3, 4)
-    else LAUNCH_IF_MATCH(params, 5, 1, 2, 4)
+    // clang-format off
+    if(CType == ConvType::InputBackprop) {
+      LAUNCH_IF_MATCH(params, 3, 1, 3, 4, 1, 4)
+    }
+    else LAUNCH_IF_MATCH(params, 3, 1, 3, 4, 1, 2)
+    else LAUNCH_IF_MATCH(params, 3, 1, 3, 4, 1, 1)
+    else LAUNCH_IF_MATCH(params, 5, 1, 2, 4, 1, 1)
+    else LAUNCH_IF_MATCH(params, 1, 1, 2, 2, 1, 1)
 
     return false;
+    // clang-format on
 #undef LAUNCH_IF_MATCH
 #undef LAUNCH_TILED_CONV
   }
