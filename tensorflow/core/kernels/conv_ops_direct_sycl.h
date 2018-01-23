@@ -98,7 +98,7 @@ inline bool launch_direct(Eigen::SyclDevice const& device, T* const output,
   auto output_buffer = device.get_sycl_buffer(output);
   auto kernel_params = get_kernel_params<CType>(params);
 
-  device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
+  auto event = device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
     auto input_access = input_buffer.template get_access<read_mode>(cgh);
     auto filter_access = filter_buffer.template get_access<read_mode>(cgh);
     auto output_access = output_buffer.template get_access<write_mode>(cgh);
@@ -108,6 +108,7 @@ inline bool launch_direct(Eigen::SyclDevice const& device, T* const output,
 
     cgh.parallel_for(cl::sycl::range<1>(n_threads), conv);
   });
+  event.wait();
   return true;
 }
 template <typename T, ConvType CType>
@@ -142,8 +143,7 @@ struct LaunchConv2DKernel {
     } else {
       LAUNCH_CONV(params, true);
     }
-    device.synchronize();
-    return true;
+    return false;
 #undef LAUNCH_CONV
 #undef LAUNCH_DEFAULT_CONV
 #undef LAUNCH_STATIC_CONV

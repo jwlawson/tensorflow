@@ -204,6 +204,7 @@ struct LaunchMatmulWinograd {
         static_cast<T*>(device.allocate(in_transform_bytes));
     size_t const inter_bytes = inter_alloc_size_per_image * images_per_alloc;
     T* const intermediate = static_cast<T*>(device.allocate(inter_bytes));
+    cl::sycl::event last_event;
 
     for (int i = 0; i < alloc_info.n_input_transforms; ++i) {
       winograd::Offsets offset =
@@ -230,7 +231,7 @@ struct LaunchMatmulWinograd {
 
       Index const n_out_items =
           tile_info.number * kernel_params.batch_ * kernel_params.features_;
-      sycl_conv::launch_transform<OutputTransform>(
+      last_event = sycl_conv::launch_transform<OutputTransform>(
           device, intermediate, output, n_out_items, kernel_params, offset.out,
           tile_info.number * kernel_params.batch_, tile_info.rows,
           tile_info.cols);
@@ -238,7 +239,7 @@ struct LaunchMatmulWinograd {
     device.deallocate(fil_transform);
     device.deallocate(in_transform);
     device.deallocate(intermediate);
-    device.synchronize();
+    last_event.wait();
     return true;
   }
 };
@@ -301,6 +302,7 @@ struct LaunchMatmulWinograd<T, M, N, R, S, ConvType::FilterBackprop> {
     T* const fil_transform =
         static_cast<T*>(device.allocate(fil_transform_bytes));
     T* const intermediate = static_cast<T*>(device.allocate(inter_bytes));
+    cl::sycl::event last_event;
 
     for (int i = 0; i < alloc_info.n_input_transforms; ++i) {
       winograd::Offsets offset =
@@ -335,11 +337,11 @@ struct LaunchMatmulWinograd<T, M, N, R, S, ConvType::FilterBackprop> {
       const Index out_transform_items =
           kernel_params.channels_ * kernel_params.features_;
       if (i == 0) {
-        sycl_conv::launch_transform<OutputTransform>(
+        last_event = sycl_conv::launch_transform<OutputTransform>(
             device, intermediate, output, out_transform_items, kernel_params,
             tile_info.number * kernel_params.batch_);
       } else {
-        sycl_conv::launch_transform<OutputTransformAccumulate>(
+        last_event = sycl_conv::launch_transform<OutputTransformAccumulate>(
             device, intermediate, output, out_transform_items, kernel_params,
             tile_info.number * kernel_params.batch_);
       }
@@ -347,7 +349,7 @@ struct LaunchMatmulWinograd<T, M, N, R, S, ConvType::FilterBackprop> {
     device.deallocate(fil_transform);
     device.deallocate(in_transform);
     device.deallocate(intermediate);
-    device.synchronize();
+    last_event.wait();
     return true;
   }
 };
