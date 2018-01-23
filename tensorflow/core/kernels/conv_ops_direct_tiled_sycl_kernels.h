@@ -22,9 +22,10 @@ template <typename T, int width>
 struct InputRow {
   using Index = int;
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE InputRow(
-      _T const* input, Index const row, Index const n_rows, Index const col,
-      Index const n_cols, Index const channel, Index const n_channels) {
+  inline SNN_ALWAYS_INLINE InputRow(_T const* input, Index const row,
+                                    Index const n_rows, Index const col,
+                                    Index const n_cols, Index const channel,
+                                    Index const n_channels) {
     SNN_PRAGMA_UNROLL
     for (int i = 0; i < width; ++i) {
       Index const idx = (row * n_cols + col + i) * n_channels + channel;
@@ -32,18 +33,16 @@ struct InputRow {
     }
   }
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE InputRow(
-      _T const* input, Index const row, Index const n_rows, Index const col,
-      Index const n_cols, Index const channel, Index const n_channels,
-      check_bounds_tag) {
+  inline SNN_ALWAYS_INLINE InputRow(_T const* input, Index const row,
+                                    Index const n_rows, Index const col,
+                                    Index const n_cols, Index const channel,
+                                    Index const n_channels, check_bounds_tag) {
     SNN_PRAGMA_UNROLL
     for (int i = 0; i < width; ++i) {
       Index const idx = (row * n_cols + col + i) * n_channels + channel;
       data[i] =
           (col + i < 0 || col + i >= n_cols) ? static_cast<_T>(0) : input[idx];
     }
-    // printf("Input: %f, %f, %f, %f, %f, %f\n", (float)data[0], (float)data[1],
-    //       (float)data[2], (float)data[3], (float)data[4], (float)data[5]);
   }
   T data[width];
 };
@@ -51,11 +50,11 @@ template <typename T, int window_rows, int window_cols>
 struct FilterTile {
   using Index = int;
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE FilterTile(_T const* const input,
-                                               Index const channel,
-                                               Index const n_channels,
-                                               Index const feature,
-                                               Index const n_features) {
+  inline SNN_ALWAYS_INLINE FilterTile(_T const* const input,
+                                      Index const channel,
+                                      Index const n_channels,
+                                      Index const feature,
+                                      Index const n_features) {
     SNN_PRAGMA_UNROLL
     for (int i = 0; i < window_rows; ++i) {
       SNN_PRAGMA_UNROLL
@@ -68,7 +67,7 @@ struct FilterTile {
     }
   }
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE FilterTile(
+  inline SNN_ALWAYS_INLINE FilterTile(
       _T const* const input, Index const channel, Index const n_channels,
       Index const feature, Index const n_features, mirror_filter_tag) {
     SNN_PRAGMA_UNROLL
@@ -81,18 +80,15 @@ struct FilterTile {
         data[window_rows - 1 - i][window_cols - 1 - j] = input[idx];
       }
     }
-    // printf("%f, %f, %f\n%f, %f, %f\n,%f, %f, %f\n", (float)data[0][0],
-    //       (float)data[0][1], (float)data[0][2], (float)data[1][0],
-    //       (float)data[1][1], (float)data[1][2], (float)data[2][0],
-    //       (float)data[2][1], (float)data[2][2]);
   }
   T data[window_rows][window_cols];
 };
 template <typename T, int n_out_rows, int n_out_cols>
 struct OutputTile {
   using Index = int;
+  inline SNN_ALWAYS_INLINE OutputTile() = default;
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void write_out(
+  inline SNN_ALWAYS_INLINE void write_out(
       _T* output, Index const batch, Index const out_row, Index const n_rows,
       Index const out_col, Index const n_cols, Index const feature,
       Index const n_features) {
@@ -107,8 +103,6 @@ struct OutputTile {
       for (Index tile_col = 0; tile_col < max_col; ++tile_col) {
         Index const idx = (tile_row * n_cols + tile_col) * n_features;
         output[idx] = data[tile_row][tile_col];
-        // printf("out: %p, r: %d, c: %d, val: %f\n", output + idx, tile_row,
-        //       tile_col, data[tile_row][tile_col]);
       }
     }
   }
@@ -165,7 +159,7 @@ struct Conv2DTiledSYCL {
   Conv2DTiledSYCL(Index n_elems, const SYCLConv2DParams& params,
                   const read_accessor input, const read_accessor kernel,
                   write_accessor output) {}
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {}
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {}
 };
 template <typename T, int tile_rows, int tile_cols, bool use_fast_div,
           int window_rows, int window_cols, int static_stride>
@@ -184,9 +178,9 @@ struct Conv2DTiledSYCL<T, ConvType::Forward, tile_rows, tile_cols, use_fast_div,
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE Conv2DTiledSYCL(
-      Index n_elems, const SYCLConv2DParams& params, const read_accessor input,
-      const read_accessor kernel, write_accessor output)
+  inline Conv2DTiledSYCL(Index n_elems, const SYCLConv2DParams& params,
+                         const read_accessor input, const read_accessor kernel,
+                         write_accessor output)
       : n_elems_{n_elems},
         div_features_{params.features_},
         n_tile_cols_{RoundRatioUpAboveZero(params.out_cols_, tile_cols)},
@@ -198,10 +192,11 @@ struct Conv2DTiledSYCL<T, ConvType::Forward, tile_rows, tile_cols, use_fast_div,
         kernel_accessor_{kernel},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
-    const Index index = item.get_id(0);
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+    Index index = item.get_id(0);
+    const Index range = item.get_range().get(0);
 
-    if (index < n_elems_) {
+    for (; index < n_elems_; index += range) {
       const T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
       const T* kernel_data = ConvertToActualTypeSycl(T, kernel_accessor_);
       T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
@@ -278,9 +273,9 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE Conv2DTiledSYCL(
-      Index n_elems, const SYCLConv2DParams& params, const read_accessor input,
-      const read_accessor kernel, write_accessor output)
+  inline Conv2DTiledSYCL(Index n_elems, const SYCLConv2DParams& params,
+                         const read_accessor input, const read_accessor kernel,
+                         write_accessor output)
       : n_elems_{n_elems},
         div_features_{params.features_},
         n_tile_cols_{RoundRatioUpAboveZero(params.in_cols_, tile_cols)},
@@ -292,7 +287,7 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
         kernel_accessor_{kernel},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
     const Index index = item.get_id(0);
     if (index < n_elems_) {
       const T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
@@ -307,10 +302,6 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
       const Index col_idx = tensor_idx.s2;
       const Index row_idx = tensor_idx.s1;
       const Index batch = tensor_idx.s0;
-      // printf("id: %d / %d, b: %d, r: %d / %d, c: %d / %d, ch: %d / %d\n",
-      // index, n_elems_,
-      //       batch, row_idx, n_tile_rows_,  col_idx, n_tile_cols_,  feature,
-      //       SNN_PARAM(features_));
 
       const Index c = col_idx * tile_cols - SNN_PARAM(pad_cols_);
       const Index cstart = RoundRatioUp(c, SNN_STATIC_PARAM(stride, cols_));
@@ -318,7 +309,6 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
       const Index r = row_idx * tile_rows - SNN_PARAM(pad_rows_);
       const Index rstart = RoundRatioUp(r, SNN_STATIC_PARAM(stride, rows_));
 
-      // printf("rs: %d, cs: %d\n", rstart, cstart);
       OutputTile<T, tile_rows, tile_cols> out_tile{};
       const T* input_data_n = input_data +
                               batch * SNN_PARAM(out_cols_) *
@@ -385,7 +375,7 @@ struct Conv2DSYCL<T, ConvType::FilterBackprop, use_fast_div, static_out,
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE Conv2DSYCL(Index n_elems,
+  inline SNN_ALWAYS_INLINE Conv2DSYCL(Index n_elems,
                                                const SYCLConv2DParams& params,
                                                const read_accessor input,
                                                const read_accessor kernel,
@@ -399,9 +389,11 @@ struct Conv2DSYCL<T, ConvType::FilterBackprop, use_fast_div, static_out,
         kernel_accessor_{kernel},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
-    const Index index = item.get_id(0);
-    if (index < n_elems_) {
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+    Index index = item.get_id(0);
+    const Index range = item.get_range().get(0);
+
+    for (; index < n_elems_; index += range) {
       const T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
       const T* kernel_data = ConvertToActualTypeSycl(T, kernel_accessor_);
       T* output_data = ConvertToActualTypeSycl(T, output_accessor_);

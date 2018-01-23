@@ -10,6 +10,7 @@
 #include "tensorflow/core/kernels/conv_ops_sycl_common.h"
 #include "tensorflow/core/kernels/conv_ops_sycl_fast_div.h"
 #include "tensorflow/core/kernels/conv_ops_sycl_kernel_helpers.h"
+#include "tensorflow/core/kernels/conv_ops_sycl_kernel_macros.h"
 #include "tensorflow/core/kernels/conv_ops_sycl_param_macros.h"
 
 namespace tensorflow {
@@ -33,12 +34,11 @@ struct Conv2DNCHW<T, ConvType::Forward, use_fast_div, static_window,
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE Conv2DNCHW(Index n_elems,
-                                               const SYCLConv2DParams& params,
-                                               const read_accessor input,
-                                               const read_accessor kernel,
-                                               write_accessor output)
-      : n_elems_{n_elems},
+  inline Conv2DNCHW(Index n_elems, const SYCLConv2DParams& params,
+                    const read_accessor input, const read_accessor kernel,
+                    write_accessor output)
+      : n_elems_{params.batch_ * params.features_ * params.out_rows_ *
+                 params.out_cols_},
         div_features_{params.features_},
         div_out_cols_{params.out_cols_},
         div_out_rows_{params.out_rows_},
@@ -47,10 +47,11 @@ struct Conv2DNCHW<T, ConvType::Forward, use_fast_div, static_window,
         kernel_accessor_{kernel},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
-    const Index index = item.get_id(0);
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+    Index index = item.get_id(0);
+    const Index range = item.get_range().get(0);
 
-    if (index < n_elems_) {
+    for (; index < n_elems_; index += range) {
       const T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
       const T* kernel_data = ConvertToActualTypeSycl(T, kernel_accessor_);
       T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
@@ -126,12 +127,11 @@ struct Conv2DNCHW<T, ConvType::InputBackprop, use_fast_div, static_window,
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE Conv2DNCHW(Index n_elems,
-                                               const SYCLConv2DParams& params,
-                                               const read_accessor input,
-                                               const read_accessor kernel,
-                                               write_accessor output)
-      : n_elems_{n_elems},
+  inline Conv2DNCHW(Index n_elems, const SYCLConv2DParams& params,
+                    const read_accessor input, const read_accessor kernel,
+                    write_accessor output)
+      : n_elems_{params.batch_ * params.features_ * params.in_rows_ *
+                 params.in_cols_},
         div_features_{params.features_},
         div_in_rows_{params.in_rows_},
         div_in_cols_{params.in_cols_},
@@ -140,9 +140,11 @@ struct Conv2DNCHW<T, ConvType::InputBackprop, use_fast_div, static_window,
         kernel_accessor_{kernel},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
-    const Index index = item.get_id(0);
-    if (index < n_elems_) {
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+    Index index = item.get_id(0);
+    const Index range = item.get_range().get(0);
+
+    for (; index < n_elems_; index += range) {
       const T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
       const T* kernel_data = ConvertToActualTypeSycl(T, kernel_accessor_);
       T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
@@ -245,12 +247,11 @@ struct Conv2DNCHW<T, ConvType::FilterBackprop, use_fast_div, static_out,
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE Conv2DNCHW(Index n_elems,
-                                               const SYCLConv2DParams& params,
-                                               const read_accessor input,
-                                               const read_accessor kernel,
-                                               write_accessor output)
-      : n_elems_{n_elems},
+  inline Conv2DNCHW(Index n_elems, const SYCLConv2DParams& params,
+                    const read_accessor input, const read_accessor kernel,
+                    write_accessor output)
+      : n_elems_{params.out_rows_ * params.out_cols_ * params.channels_ *
+                 params.features_},
         div_features_{params.features_},
         div_channels_{params.channels_},
         div_out_cols_{params.out_cols_},
@@ -259,9 +260,11 @@ struct Conv2DNCHW<T, ConvType::FilterBackprop, use_fast_div, static_out,
         kernel_accessor_{kernel},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
-    const Index index = item.get_id(0);
-    if (index < n_elems_) {
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+    Index index = item.get_id(0);
+    const Index range = item.get_range().get(0);
+
+    for (; index < n_elems_; index += range) {
       const T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
       const T* kernel_data = ConvertToActualTypeSycl(T, kernel_accessor_);
       T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
