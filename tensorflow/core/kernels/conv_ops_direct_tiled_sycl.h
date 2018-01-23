@@ -99,11 +99,13 @@ inline bool launch_tiled(Eigen::SyclDevice const& device, T* const output,
                                   window_rows, window_cols, stride>;
   static constexpr auto read_mode = Functor::read_mode;
   static constexpr auto write_mode = Functor::write_mode;
+  static constexpr auto max_threads = 1024 * 256;
   using Index = int;
   const Index output_size =
       tiled_output_size<CType, tile_rows, tile_cols>::get(params);
   const Index workgroup_size = device.maxSyclThreadsPerBlock();
-  const Index n_threads = RoundUpToNearestMultiple(output_size, workgroup_size);
+  const Index n_threads = std::max(
+      RoundUpToNearestMultiple(output_size, workgroup_size), max_threads);
 
   auto input_buffer = device.get_sycl_buffer(input);
   auto filter_buffer = device.get_sycl_buffer(filter);

@@ -89,9 +89,11 @@ inline bool launch_direct(Eigen::SyclDevice const& device, T* const output,
   static constexpr auto read_mode = Functor::read_mode;
   static constexpr auto write_mode = Functor::write_mode;
   using Index = int;
+  static constexpr Index max_threads = 2048 * 256;
   const Index output_size = get_output_size<CType>(params);
   const Index workgroup_size = device.maxSyclThreadsPerBlock();
-  const Index n_threads = RoundUpToNearestMultiple(output_size, workgroup_size);
+  const Index n_threads = std::max(
+      RoundUpToNearestMultiple(output_size, workgroup_size), max_threads);
 
   auto input_buffer = device.get_sycl_buffer(input);
   auto filter_buffer = device.get_sycl_buffer(filter);
