@@ -192,7 +192,7 @@ namespace sycl_conv {
 // prevents the variadic parameter pack from being passed to the cgh lambda. We
 // provide a number of functions here to work around this.
 template <typename Functor, typename T, typename Index, typename Arg>
-static void launch_transform(Eigen::SyclDevice const& device,
+static cl::sycl::event launch_transform(Eigen::SyclDevice const& device,
                              T const* const input, T* const transform,
                              const Index n_items,
                              SYCLConv2DParams const& params, Arg arg) {
@@ -202,7 +202,7 @@ static void launch_transform(Eigen::SyclDevice const& device,
   const Index workgroup_size = device.maxSyclThreadsPerBlock();
   const Index n_threads = RoundUpToNearestMultiple(n_items, workgroup_size);
 
-  device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
+  auto event = device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
     auto input_access = device.get_sycl_accessor<read_mode>(cgh, input);
     auto transform_access =
         device.get_sycl_accessor<write_mode>(cgh, transform);
@@ -210,10 +210,11 @@ static void launch_transform(Eigen::SyclDevice const& device,
     Functor extract_fun(arg, params, input_access, transform_access);
     cgh.parallel_for(cl::sycl::range<1>(n_threads), extract_fun);
   });
+  return event;
 }
 template <typename Functor, typename T, typename Index, typename Arg1,
           typename Arg2>
-static void launch_transform(Eigen::SyclDevice const& device,
+static cl::sycl::event launch_transform(Eigen::SyclDevice const& device,
                              T const* const input, T* const transform,
                              const Index n_items,
                              SYCLConv2DParams const& params, Arg1 arg1,
@@ -224,7 +225,7 @@ static void launch_transform(Eigen::SyclDevice const& device,
   const Index workgroup_size = device.maxSyclThreadsPerBlock();
   const Index n_threads = RoundUpToNearestMultiple(n_items, workgroup_size);
 
-  device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
+  auto event = device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
     auto input_access = device.get_sycl_accessor<read_mode>(cgh, input);
     auto transform_access =
         device.get_sycl_accessor<write_mode>(cgh, transform);
@@ -232,10 +233,11 @@ static void launch_transform(Eigen::SyclDevice const& device,
     Functor extract_fun(arg1, arg2, params, input_access, transform_access);
     cgh.parallel_for(cl::sycl::range<1>(n_threads), extract_fun);
   });
+  return event;
 }
 template <typename Functor, typename T, typename Index, typename Arg1,
           typename Arg2, typename Arg3>
-static void launch_transform(Eigen::SyclDevice const& device,
+static cl::sycl::event launch_transform(Eigen::SyclDevice const& device,
                              T const* const input, T* const transform,
                              const Index n_items,
                              SYCLConv2DParams const& params, Arg1 arg1,
@@ -246,7 +248,7 @@ static void launch_transform(Eigen::SyclDevice const& device,
   const Index workgroup_size = device.maxSyclThreadsPerBlock();
   const Index n_threads = RoundUpToNearestMultiple(n_items, workgroup_size);
 
-  device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
+  auto event = device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
     auto input_access = device.get_sycl_accessor<read_mode>(cgh, input);
     auto transform_access =
         device.get_sycl_accessor<write_mode>(cgh, transform);
@@ -255,10 +257,11 @@ static void launch_transform(Eigen::SyclDevice const& device,
                         transform_access);
     cgh.parallel_for(cl::sycl::range<1>(n_threads), extract_fun);
   });
+  return event;
 }
 template <typename Functor, typename T, typename Index, typename Arg1,
           typename Arg2, typename Arg3, typename Arg4>
-static void launch_transform(Eigen::SyclDevice const& device,
+static cl::sycl::event launch_transform(Eigen::SyclDevice const& device,
                              T const* const input, T* const transform,
                              const Index n_items,
                              SYCLConv2DParams const& params, Arg1 arg1,
@@ -269,7 +272,7 @@ static void launch_transform(Eigen::SyclDevice const& device,
   const Index workgroup_size = device.maxSyclThreadsPerBlock();
   const Index n_threads = RoundUpToNearestMultiple(n_items, workgroup_size);
 
-  device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
+  auto event = device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
     auto input_access = device.get_sycl_accessor<read_mode>(cgh, input);
     auto transform_access =
         device.get_sycl_accessor<write_mode>(cgh, transform);
@@ -278,6 +281,7 @@ static void launch_transform(Eigen::SyclDevice const& device,
                         transform_access);
     cgh.parallel_for(cl::sycl::range<1>(n_threads), extract_fun);
   });
+  return event;
 }
 template <bool trans_lhs, bool trans_rhs, typename T, typename Index>
 static void launch_matmul(Eigen::SyclDevice const& device, T const* const lhs,
