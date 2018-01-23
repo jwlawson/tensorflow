@@ -220,6 +220,56 @@ struct Mad<cl::sycl::vec<T, 1>> {
     return VecType{cl::sycl::mad(a.s0(), b.s0(), c.s0())};
   }
 };
+template <typename T>
+struct Dot {
+  T operator()(T a, T b) { return a * b; }
+};
+template <typename T, int N>
+struct Dot<cl::sycl::vec<T, N>> {
+  using VecType = cl::sycl::vec<T, N>;
+  static_assert(
+      std::is_same<float, typename std::remove_cv<T>::type>::value ||
+          std::is_same<double, typename std::remove_cv<T>::type>::value,
+      "Dot product is only supported on floats and doubles.");
+  static_assert(
+      N == 2 || N == 3 || N == 4,
+      "SYCL dot product is only valid for vector types with size 2, 3 or 4");
+  T operator()(VecType a, VecType b) { return cl::sycl::dot(a, b); }
+};
+template <typename T>
+struct Dot<cl::sycl::vec<T, 1>> {
+  using VecType = cl::sycl::vec<T, 1>;
+  T operator()(VecType a, VecType b) { return a.s0() * b.s0(); }
+};
+#ifndef __SYCL_DEVICE_ONLY__
+// Work around a computecpp bug which doesn't provide an implementation of dot
+// on the host for 2 element vectors.
+template <typename T>
+struct Dot<cl::sycl::vec<T, 2>> {
+  using VecType = cl::sycl::vec<T, 2>;
+  T operator()(VecType a, VecType b) {
+    return a.s0() * b.s0() + a.s1() * b.s1();
+  }
+};
+#endif
+template <typename T>
+struct Dot<cl::sycl::vec<T, 8>> {
+  using HalfVecType = cl::sycl::vec<T, 4>;
+  using VecType = cl::sycl::vec<T, 8>;
+  T operator()(VecType a, VecType b) {
+    return Dot<HalfVecType>()(HalfVecType{a.hi()}, HalfVecType{b.hi()}) +
+           Dot<HalfVecType>()(HalfVecType{a.lo()}, HalfVecType{b.lo()});
+  }
+};
+template <typename T>
+struct Dot<cl::sycl::vec<T, 16>> {
+  using HalfVecType = cl::sycl::vec<T, 8>;
+  using VecType = cl::sycl::vec<T, 16>;
+  T operator()(VecType a, VecType b) {
+    return Dot<HalfVecType>()(HalfVecType{a.hi()}, HalfVecType{b.hi()}) +
+           Dot<HalfVecType>()(HalfVecType{a.lo()}, HalfVecType{b.lo()});
+  }
+};
 }  // namespace math
 }  // namespace helpers
 }  // namespace tensorflow
