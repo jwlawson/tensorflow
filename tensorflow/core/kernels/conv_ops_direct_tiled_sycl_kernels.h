@@ -10,6 +10,7 @@
 #include "tensorflow/core/kernels/conv_ops_sycl_common.h"
 #include "tensorflow/core/kernels/conv_ops_sycl_fast_div.h"
 #include "tensorflow/core/kernels/conv_ops_sycl_kernel_helpers.h"
+#include "tensorflow/core/kernels/conv_ops_sycl_kernel_macros.h"
 #include "tensorflow/core/kernels/conv_ops_sycl_param_macros.h"
 
 namespace tensorflow {
@@ -24,6 +25,7 @@ struct InputRow {
   inline TF_ATTRIBUTE_ALWAYS_INLINE InputRow(
       _T const* input, Index const row, Index const n_rows, Index const col,
       Index const n_cols, Index const channel, Index const n_channels) {
+    SNN_PRAGMA_UNROLL
     for (int i = 0; i < width; ++i) {
       Index const idx = (row * n_cols + col + i) * n_channels + channel;
       data[i] = input[idx];
@@ -34,13 +36,14 @@ struct InputRow {
       _T const* input, Index const row, Index const n_rows, Index const col,
       Index const n_cols, Index const channel, Index const n_channels,
       check_bounds_tag) {
+    SNN_PRAGMA_UNROLL
     for (int i = 0; i < width; ++i) {
       Index const idx = (row * n_cols + col + i) * n_channels + channel;
       data[i] =
           (col + i < 0 || col + i >= n_cols) ? static_cast<_T>(0) : input[idx];
     }
-    printf("Input: %f, %f, %f, %f, %f, %f\n", (float)data[0], (float)data[1],
-           (float)data[2], (float)data[3], (float)data[4], (float)data[5]);
+    // printf("Input: %f, %f, %f, %f, %f, %f\n", (float)data[0], (float)data[1],
+    //       (float)data[2], (float)data[3], (float)data[4], (float)data[5]);
   }
   T data[width];
 };
@@ -53,7 +56,9 @@ struct FilterTile {
                                                Index const n_channels,
                                                Index const feature,
                                                Index const n_features) {
+    SNN_PRAGMA_UNROLL
     for (int i = 0; i < window_rows; ++i) {
+      SNN_PRAGMA_UNROLL
       for (int j = 0; j < window_cols; ++j) {
         Index const idx =
             ((i * window_cols + j) * n_channels + channel) * n_features +
@@ -66,7 +71,9 @@ struct FilterTile {
   inline TF_ATTRIBUTE_ALWAYS_INLINE FilterTile(
       _T const* const input, Index const channel, Index const n_channels,
       Index const feature, Index const n_features, mirror_filter_tag) {
+    SNN_PRAGMA_UNROLL
     for (int i = 0; i < window_rows; ++i) {
+      SNN_PRAGMA_UNROLL
       for (int j = 0; j < window_cols; ++j) {
         Index const idx =
             ((i * window_cols + j) * n_channels + channel) * n_features +
@@ -74,10 +81,10 @@ struct FilterTile {
         data[window_rows - 1 - i][window_cols - 1 - j] = input[idx];
       }
     }
-    printf("%f, %f, %f\n%f, %f, %f\n,%f, %f, %f\n", (float)data[0][0],
-           (float)data[0][1], (float)data[0][2], (float)data[1][0],
-           (float)data[1][1], (float)data[1][2], (float)data[2][0],
-           (float)data[2][1], (float)data[2][2]);
+    // printf("%f, %f, %f\n%f, %f, %f\n,%f, %f, %f\n", (float)data[0][0],
+    //       (float)data[0][1], (float)data[0][2], (float)data[1][0],
+    //       (float)data[1][1], (float)data[1][2], (float)data[2][0],
+    //       (float)data[2][1], (float)data[2][2]);
   }
   T data[window_rows][window_cols];
 };
@@ -94,12 +101,14 @@ struct OutputTile {
     output += offset;
     Index const max_row = cl::sycl::min(n_out_rows, n_rows - out_row);
     Index const max_col = cl::sycl::min(n_out_cols, n_cols - out_col);
+    SNN_PRAGMA_UNROLL
     for (Index tile_row = 0; tile_row < max_row; ++tile_row) {
+      SNN_PRAGMA_UNROLL
       for (Index tile_col = 0; tile_col < max_col; ++tile_col) {
         Index const idx = (tile_row * n_cols + tile_col) * n_features;
         output[idx] = data[tile_row][tile_col];
-        printf("out: %p, r: %d, c: %d, val: %f\n", output + idx, tile_row,
-               tile_col, data[tile_row][tile_col]);
+        // printf("out: %p, r: %d, c: %d, val: %f\n", output + idx, tile_row,
+        //       tile_col, data[tile_row][tile_col]);
       }
     }
   }
@@ -112,8 +121,10 @@ inline TF_ATTRIBUTE_ALWAYS_INLINE void convolve_1xw_one_row(
     FilterTile<T, n_window_rows, n_window_cols> const& filter,
     OutputTile<T, n_out_rows, n_out_cols>& output, int const out_row,
     int const filter_row) {
+  SNN_PRAGMA_UNROLL
   for (int out_col = 0; out_col < n_out_cols; ++out_col) {
     int const in_offset = out_col;
+    SNN_PRAGMA_UNROLL
     for (int filter_col = 0; filter_col < n_window_cols; ++filter_col) {
       output.data[out_row][out_col] = cl::sycl::mad(
           input.data[in_offset + filter_col],
@@ -127,6 +138,7 @@ inline TF_ATTRIBUTE_ALWAYS_INLINE void convolve_1xw_whole_tile(
     InputRow<T, n_out_cols + n_window_rows - 1> const& input,
     FilterTile<T, n_window_rows, n_window_cols> const& filter,
     OutputTile<T, n_out_rows, n_out_cols>& output, int const row_idx) {
+  SNN_PRAGMA_UNROLL
   for (int out_row = 0; out_row < n_out_rows; ++out_row) {
     int filter_row = row_idx - out_row;
     if (filter_row >= 0 && filter_row < n_window_rows) {
@@ -134,9 +146,6 @@ inline TF_ATTRIBUTE_ALWAYS_INLINE void convolve_1xw_whole_tile(
     }
   }
 }
-/**
- * SYCL kernel for naive convolution computation.
- */
 template <typename T, ConvType CType, int tile_rows, int tile_cols,
           bool use_fast_div, int window_rows, int window_cols,
           int static_stride = 0>
@@ -298,8 +307,10 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
       const Index col_idx = tensor_idx.s2;
       const Index row_idx = tensor_idx.s1;
       const Index batch = tensor_idx.s0;
-      printf("id: %d / %d, b: %d, r: %d / %d, c: %d / %d, ch: %d / %d\n", index, n_elems_,
-             batch, row_idx, n_tile_rows_,  col_idx, n_tile_cols_,  feature, SNN_PARAM(features_));
+      // printf("id: %d / %d, b: %d, r: %d / %d, c: %d / %d, ch: %d / %d\n",
+      // index, n_elems_,
+      //       batch, row_idx, n_tile_rows_,  col_idx, n_tile_cols_,  feature,
+      //       SNN_PARAM(features_));
 
       const Index c = col_idx * tile_cols - SNN_PARAM(pad_cols_);
       const Index cstart = RoundRatioUp(c, SNN_STATIC_PARAM(stride, cols_));
@@ -307,7 +318,7 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
       const Index r = row_idx * tile_rows - SNN_PARAM(pad_rows_);
       const Index rstart = RoundRatioUp(r, SNN_STATIC_PARAM(stride, rows_));
 
-      printf("rs: %d, cs: %d\n", rstart, cstart);
+      // printf("rs: %d, cs: %d\n", rstart, cstart);
       OutputTile<T, tile_rows, tile_cols> out_tile{};
       const T* input_data_n = input_data +
                               batch * SNN_PARAM(out_cols_) *
@@ -317,6 +328,7 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
             kernel_data,          feature,
             SNN_PARAM(features_), channel,
             SNN_PARAM(channels_), mirror_filter_tag{}};
+        SNN_PRAGMA_UNROLL
         for (Index r = rstart, i = 0;
              r < SNN_PARAM(out_rows_) && i < window_rows + tile_rows - 1;
              ++r, i += SNN_STATIC_PARAM(stride, rows_)) {
@@ -394,6 +406,14 @@ struct Conv2DSYCL<T, ConvType::FilterBackprop, use_fast_div, static_out,
       const T* kernel_data = ConvertToActualTypeSycl(T, kernel_accessor_);
       T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
 
+      const helpers::TensorIndex4D tensor_idx =
+          helpers::unflatten4d<Index, use_fast_div>(
+              index, div_n_tile_rows_, n_tile_rows_, div_n_tile_cols_,
+              n_tile_cols_, div_features_, SNN_PARAM(features_));
+      const Index feature = tensor_idx.s3;
+      const Index col_idx = tensor_idx.s2;
+      const Index row_idx = tensor_idx.s1;
+      const Index batch = tensor_idx.s0;
       const Index hwcf_idx = index;
       const Index hwc_idx = hwcf_idx / div_features_;
       const Index feature = hwcf_idx - hwc_idx * SNN_PARAM(features_);

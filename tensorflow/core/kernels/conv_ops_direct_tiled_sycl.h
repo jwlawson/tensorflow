@@ -74,7 +74,6 @@ inline bool no_fast_div<ConvType::Forward>(SYCLConv2DParams const& params,
 template <>
 inline bool no_fast_div<ConvType::InputBackprop>(SYCLConv2DParams const& params,
                                                  int tile_rows, int tile_cols) {
-  LOG(INFO) << "Fastdiv? ch: " << params.channels_ << " nrt: " << RoundRatioUpAboveZero(params.in_rows_, tile_rows) << " nct: " << RoundRatioUpAboveZero(params.in_cols_, tile_cols);
   return params.channels_ == 1 ||
          RoundRatioUpAboveZero(params.in_rows_, tile_rows) == 1 ||
          RoundRatioUpAboveZero(params.in_cols_, tile_cols) == 1;
@@ -96,7 +95,7 @@ template <typename T, ConvType CType, int tile_rows, int tile_cols,
 inline bool launch_tiled(Eigen::SyclDevice const& device, T* const output,
                          T const* const input, T const* const filter,
                          SYCLConv2DParams const& params) {
-  using Functor = Conv2DTiledSYCL<T, CType, tile_rows, tile_cols, use_fast_div,
+  using Functor = Conv2DTiledSYCL<T, CType, tile_rows, tile_cols, false,
                                   window_rows, window_cols, stride>;
   static constexpr auto read_mode = Functor::read_mode;
   static constexpr auto write_mode = Functor::write_mode;
@@ -111,7 +110,6 @@ inline bool launch_tiled(Eigen::SyclDevice const& device, T* const output,
   auto output_buffer = device.get_sycl_buffer(output);
   auto kernel_params = get_kernel_params<CType>(params);
 
-  LOG(INFO) << "Lauching fast_div: " << use_fast_div;
   auto event = device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
     auto input_access = input_buffer.template get_access<read_mode>(cgh);
     auto filter_access = filter_buffer.template get_access<read_mode>(cgh);
