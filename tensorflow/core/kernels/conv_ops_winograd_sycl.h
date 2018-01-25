@@ -269,7 +269,7 @@ struct LaunchMatmulWinograd<T, M, N, R, S, ConvType::FilterBackprop> {
     size_t const inter_bytes =
         A * B * params.channels_ * params.features_ * sizeof(T);
     size_t const alloc_limit =
-        sycl_device.get_info<cl::sycl::info::device::max_mem_alloc_size>();
+        sycl_device.get_info<cl::sycl::info::device::max_mem_alloc_size>() / 4;
     if (TF_PREDICT_FALSE(inter_bytes > alloc_limit)) {
       VLOG(1) << "The temporary buffer required by Winograd for the "
                  "intermediate tensor is too large to be allocated on the "

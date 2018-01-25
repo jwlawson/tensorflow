@@ -116,7 +116,8 @@ static inline void launch_conv2d(backend_type const& backend,
   }
 #undef CASE
   if (!result) {
-    // Fall back to using direct convolution which does not require allocations.
+    VLOG(0) << "Fall back to using direct convolution which does not require "
+               "allocations.";
     CALL_LAUNCHER(result, algorithm::direct);
   }
 #undef CALL_LAUNCHER
