@@ -18,6 +18,13 @@
 #else
 #define SNN_ALWAYS_INLINE
 #endif
+#if defined(__SYCL_DEVICE_ONLY__) && SNN_HAS_ATTRIBUTE(optimize)
+#define SNN_FAST_MATH __attribute__((optimize("-ffast-math"))
+#define SNN_ASSOCIATIVE_MATH __attribute__((optimize("-fassociative-math"))
+#else
+#define SNN_FAST_MATH
+#define SNN_ASSOCIATIVE_MATH
+#endif
 // Suggest to the compiler to unroll loops, typically on the device this leads
 // to performance benefits, but make sure that this is benchmarked.
 #ifdef __SYCL_DEVICE_ONLY__
