@@ -24,14 +24,22 @@ struct InputTile {
    * passed with the pointer, rather than specifying the pointer will be to
    * global memory or to local memory.
    */
-  template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE InputTile(_T* input, int n_cols,
-                                              int n_channels, int rsize,
-                                              int csize, int firstr,
-                                              int firstc) {
+  template <typename _T, typename Index>
+  inline SNN_ALWAYS_INLINE InputTile(_T* input, Index const batch,
+                                     Index const rstart, Index const n_rows,
+                                     Index const cstart, Index const n_cols,
+                                     Index const channel,
+                                     Index const n_channels, Index const firstr,
+                                     Index const firstc) {
+    Index const offset =
+        ((batch * n_rows + rstart) * n_cols + cstart) * n_channels + channel;
+    input += offset;
+    SNN_PRAGMA_UNROLL
     for (int r = 0; r < A; ++r) {
+      SNN_PRAGMA_UNROLL
       for (int c = 0; c < B; ++c) {
-        data[r][c] = (r < firstr || c < firstc || r >= rsize || c >= csize)
+        data[r][c] = (r < firstr || c < firstc || r + rstart >= n_rows ||
+                      c + cstart >= n_cols)
                          ? static_cast<_T>(0)
                          : input[(r * n_cols + c) * n_channels];
       }
@@ -62,11 +70,9 @@ struct FilterTile<T, M, N, R, S, ConvType::Forward> final
    * global memory or to local memory.
    */
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE FilterTile(_T const* input,
-                                               int const channel,
-                                               int const feature,
-                                               int const n_channels,
-                                               int const n_features) {
+  inline SNN_ALWAYS_INLINE FilterTile(_T const* input, int const channel,
+                                      int const feature, int const n_channels,
+                                      int const n_features) {
     input += channel * n_features + feature;
     for (int r = 0; r < R; ++r) {
       for (int c = 0; c < S; ++c) {
@@ -92,19 +98,17 @@ struct FilterTile<T, M, N, R, S, ConvType::InputBackprop> final
    * global memory or to local memory.
    */
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE FilterTile(_T const* input,
-                                               int const channel,
-                                               int const feature,
-                                               int const n_channels,
-                                               int const n_features) {
+  inline SNN_ALWAYS_INLINE FilterTile(_T const* input, int const channel,
+                                      int const feature, int const n_channels,
+                                      int const n_features) {
     input += channel * n_features + feature;
     for (int r = 0; r < R; ++r) {
       for (int c = 0; c < S; ++c) {
         // Here the transforms (R - 1 - r) and (S - 1 - c) mirror the filter
         // data. Note that the channel and feature dims were switched in the
         // kernel params.
-        int idx = ((R - 1 - r) * S + (S - 1 - c)) * n_channels * n_features;
-        data[r][c] = input[idx];
+        int idx = (r * S + c) * n_channels * n_features;
+        data[R - 1 - r][S - 1 - c] = input[idx];
       }
     }
   }
@@ -123,10 +127,9 @@ struct FilterTile<T, M, N, R, S, ConvType::FilterBackprop> final
    * global memory or to local memory.
    */
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE FilterTile(_T const* input,
-                                               SYCLOutputWindow const& w,
-                                               int const n_cols,
-                                               int const n_features) {
+  inline SNN_ALWAYS_INLINE FilterTile(_T const* input,
+                                      SYCLOutputWindow const& w,
+                                      int const n_cols, int const n_features) {
     input += w.offset;
     for (int r = 0; r < R; ++r) {
       for (int c = 0; c < S; ++c) {
@@ -198,42 +201,21 @@ template <typename T, int M, int N, int R, int S>
 struct IntermediateTile {
   static constexpr int A = M + R - 1;
   static constexpr int B = N + S - 1;
-  inline TF_ATTRIBUTE_ALWAYS_INLINE IntermediateTile() {
-    for (int i = 0; i < A; ++i) {
-      for (int j = 0; j < B; ++j) {
-        data[i][j] = static_cast<T>(0);
-      }
-    }
-  }
   /**
    * Read the intermediate tile from a temporary buffer. The input shape is
    * expected to be
    *   [ (M+R-1)(N+S-1), (batch * tile_rows * tile_cols), features ].
    */
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE IntermediateTile(_T* input,
-                                                     int const tile_idx,
-                                                     int const n_tiles,
-                                                     int const feature,
-                                                     int const n_features) {
+  inline SNN_ALWAYS_INLINE IntermediateTile(_T* input, int const tile_idx,
+                                            int const n_tiles,
+                                            int const feature,
+                                            int const n_features) {
     input += tile_idx * n_features + feature;
     for (int r = 0; r < A; ++r) {
       for (int c = 0; c < B; ++c) {
         const int idx = (r * B + c) * n_features * n_tiles;
         data[r][c] = input[idx];
-#if 0
-        data[r][c] = *input;
-        input += n_features * n_tiles;
-#endif
-      }
-    }
-  }
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void update(
-      TransformedInputTile<T, M, N, R, S> const& inp,
-      TransformedFilterTile<T, M, N, R, S> const& filter) {
-    for (int r = 0; r < A; ++r) {
-      for (int c = 0; c < B; ++c) {
-        data[r][c] += inp.data[r][c] * filter.data[r][c];
       }
     }
   }
@@ -282,7 +264,7 @@ struct OutputData {
    * global memory or to local memory.
    */
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE static void write_transformed_input(
+  inline SNN_ALWAYS_INLINE static void write_transformed_input(
       _T* output, Index const tile_idx, Index const channel,
       Index const n_tiles, Index const n_channels,
       TransformedInputTile<T, M, N, R, S> const& tile) {
@@ -291,10 +273,6 @@ struct OutputData {
       for (int c = 0; c < B; ++c) {
         const int idx = (r * B + c) * n_tiles * n_channels;
         output[idx] = tile.data[r][c];
-#if 0
-        *output = tile.data[r][c];
-        output += n_tiles * n_channels;
-#endif
       }
     }
   }
@@ -312,7 +290,7 @@ struct OutputData {
    * global memory or to local memory.
    */
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE static void write_transformed_filter(
+  inline SNN_ALWAYS_INLINE static void write_transformed_filter(
       _T* output, Index const channel, Index const feature,
       Index const n_channels, Index const n_features,
       TransformedFilterTile<T, M, N, R, S> const& tile) {
@@ -321,10 +299,6 @@ struct OutputData {
       for (int c = 0; c < B; ++c) {
         const int idx = (r * B + c) * n_features * n_channels;
         output[idx] = tile.data[r][c];
-#if 0
-        *output = tile.data[r][c];
-        output += n_features * n_channels;
-#endif
       }
     }
   }
@@ -338,7 +312,7 @@ struct OutputData {
    * global memory or to local memory.
    */
   template <typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE static void write_output(
+  inline SNN_ALWAYS_INLINE static void write_output(
       _T* output, SYCLOutputWindow const& window, Index const n_cols,
       Index const n_channels, OutputTile<T, M, N, R, S> const& tile) {
     output += window.offset;
@@ -361,7 +335,7 @@ struct OutputData {
    * global memory or to local memory.
    */
   template <bool accumulate_output, typename _T>
-  inline TF_ATTRIBUTE_ALWAYS_INLINE static void write_filter_output(
+  inline SNN_ALWAYS_INLINE static void write_filter_output(
       _T* output, Index const channel, Index const feature,
       Index const n_channels, Index const n_features,
       OutputTile<T, M, N, R, S> const& tile) {
@@ -374,10 +348,6 @@ struct OutputData {
         } else {
           output[idx] = tile.data[r][c];
         }
-#if 0
-        *output = tile.data[r][c];
-        output += n_channels * n_features;
-#endif
       }
     }
   }
@@ -394,10 +364,10 @@ struct ExtractInputTiles {
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE ExtractInputTiles(
-      Index const in_offset, Index const n_tiles, Index const n_tile_rows,
-      Index const n_tile_cols, SYCLConv2DParams const& params,
-      read_accessor const input, write_accessor output)
+  ExtractInputTiles(Index const in_offset, Index const n_tiles,
+                    Index const n_tile_rows, Index const n_tile_cols,
+                    SYCLConv2DParams const& params, read_accessor const input,
+                    write_accessor output)
       : in_offset_{in_offset},
         n_elems_{params.channels_ * n_tile_cols * n_tile_rows * params.batch_},
         n_tiles_{n_tiles},
@@ -411,7 +381,7 @@ struct ExtractInputTiles {
         input_accessor_{input},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
     Index index = item.get_id(0);
     if (index < n_elems_) {
       const T* input_data =
@@ -431,19 +401,14 @@ struct ExtractInputTiles {
       const Index batch = tile_tensor_idx.s0;
 
       const Index cstart = col_idx * N - n_pad_cols_;
-      const Index cend = cl::sycl::min(cstart + N + S - 1, n_in_cols_);
       const Index firstc = cstart < 0 ? -cstart : 0;
 
       const Index rstart = row_idx * M - n_pad_rows_;
-      const Index rend = cl::sycl::min(rstart + M + R - 1, n_in_rows_);
       const Index firstr = rstart < 0 ? -rstart : 0;
 
-      const Index offset =
-          ((batch * n_in_rows_ + rstart) * n_in_cols_ + cstart) * n_channels_ +
-          channel_idx;
-      InputTile<T, M, N, R, S> inp(input_data + offset, n_in_cols_, n_channels_,
-                                   rend - rstart, cend - cstart, firstr,
-                                   firstc);
+      InputTile<T, M, N, R, S> inp(input_data, batch, rstart, n_in_rows_,
+                                   cstart, n_in_cols_, channel_idx, n_channels_,
+                                   firstr, firstc);
 
       OutputData<T, M, N, R, S>::write_transformed_input(
           output_data, tile_idx, channel_idx, n_tiles_, n_channels_,
@@ -477,10 +442,10 @@ struct ExtractInputTiles<T, M, N, R, S, ConvType::FilterBackprop> {
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE ExtractInputTiles(
-      Index const in_offset, Index const n_tiles, Index const n_tile_rows,
-      Index const n_tile_cols, SYCLConv2DParams const& params,
-      read_accessor const input, write_accessor output)
+  ExtractInputTiles(Index const in_offset, Index const n_tiles,
+                    Index const n_tile_rows, Index const n_tile_cols,
+                    SYCLConv2DParams const& params, read_accessor const input,
+                    write_accessor output)
       : in_offset_{in_offset},
         n_elems_{params.channels_ * n_tile_cols * n_tile_rows * params.batch_},
         n_tiles_{n_tiles},
@@ -494,7 +459,7 @@ struct ExtractInputTiles<T, M, N, R, S, ConvType::FilterBackprop> {
         input_accessor_{input},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
     Index index = item.get_id(0);
     if (index < n_elems_) {
       const T* input_data =
@@ -514,19 +479,14 @@ struct ExtractInputTiles<T, M, N, R, S, ConvType::FilterBackprop> {
       const Index batch = tile_tensor_idx.s0;
 
       const Index cstart = col_idx * S - n_pad_cols_;
-      const Index cend = std::min(cstart + N + S - 1, n_in_cols_);
       const Index firstc = cstart < 0 ? -cstart : 0;
 
       const Index rstart = row_idx * R - n_pad_rows_;
-      const Index rend = std::min(rstart + M + R - 1, n_in_rows_);
       const Index firstr = rstart < 0 ? -rstart : 0;
 
-      const Index offset =
-          ((batch * n_in_rows_ + rstart) * n_in_cols_ + cstart) * n_channels_ +
-          channel_idx;
-      InputTile<T, M, N, R, S> inp(input_data + offset, n_in_cols_, n_channels_,
-                                   rend - rstart, cend - cstart, firstr,
-                                   firstc);
+      InputTile<T, M, N, R, S> inp(input_data, batch, rstart, n_in_rows_,
+                                   cstart, n_in_cols_, channel_idx, n_channels_,
+                                   firstr, firstc);
       TransformedInputTile<T, M, N, R, S> trans{inp};
 
       OutputData<T, M, N, R, S>::write_transformed_input(
@@ -560,16 +520,15 @@ struct ExtractKernelTiles {
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE ExtractKernelTiles(
-      Index const /*n_tiles*/, SYCLConv2DParams const& params,
-      read_accessor const kernel, write_accessor output)
+  ExtractKernelTiles(Index const /*n_tiles*/, SYCLConv2DParams const& params,
+                     read_accessor const kernel, write_accessor output)
       : n_tiles_{params.channels_ * params.features_},
         n_channels_{params.channels_},
         n_features_{params.features_},
         kernel_accessor_{kernel},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
     Index index = item.get_id(0);
     if (index < n_tiles_) {
       const T* kernel_data = ConvertToActualTypeSycl(T, kernel_accessor_);
@@ -616,16 +575,15 @@ struct ExtractKernelTiles<T, M, N, R, S, ConvType::InputBackprop> {
    * to be n_features_ in the kernel. We switch these back in the constructor
    * so they are as expected.
    */
-  inline TF_ATTRIBUTE_ALWAYS_INLINE ExtractKernelTiles(
-      Index const /*n_tiles*/, SYCLConv2DParams const& params,
-      read_accessor const kernel, write_accessor output)
+  ExtractKernelTiles(Index const /*n_tiles*/, SYCLConv2DParams const& params,
+                     read_accessor const kernel, write_accessor output)
       : n_tiles_{params.channels_ * params.features_},
         n_features_{params.channels_},
         n_channels_{params.features_},
         kernel_accessor_{kernel},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
     Index index = item.get_id(0);
     if (index < n_tiles_) {
       const T* kernel_data = ConvertToActualTypeSycl(T, kernel_accessor_);
@@ -677,10 +635,10 @@ struct ExtractKernelTiles<T, M, N, R, S, ConvType::FilterBackprop> {
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE ExtractKernelTiles(
-      Index const in_offset, Index const n_tiles, Index const n_tile_rows,
-      Index const n_tile_cols, SYCLConv2DParams const& params,
-      read_accessor const kernel, write_accessor output)
+  ExtractKernelTiles(Index const in_offset, Index const n_tiles,
+                     Index const n_tile_rows, Index const n_tile_cols,
+                     SYCLConv2DParams const& params, read_accessor const kernel,
+                     write_accessor output)
       : in_offset_{in_offset},
         n_threads_{params.features_ * n_tile_cols * n_tile_rows *
                    params.batch_},
@@ -693,7 +651,7 @@ struct ExtractKernelTiles<T, M, N, R, S, ConvType::FilterBackprop> {
         kernel_accessor_{kernel},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
     Index index = item.get_id(0);
     if (index < n_threads_) {
       const T* kernel_data =
@@ -758,10 +716,10 @@ struct ExtractOutputTiles {
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE ExtractOutputTiles(
-      Index const out_offset, Index const n_tiles, Index const n_tile_rows,
-      Index const n_tile_cols, SYCLConv2DParams const& params,
-      read_accessor const input, write_accessor output)
+  ExtractOutputTiles(Index const out_offset, Index const n_tiles,
+                     Index const n_tile_rows, Index const n_tile_cols,
+                     SYCLConv2DParams const& params, read_accessor const input,
+                     write_accessor output)
       : out_offset_{out_offset},
         n_threads_{params.features_ * n_tile_cols * n_tile_rows *
                    params.batch_},
@@ -774,7 +732,7 @@ struct ExtractOutputTiles {
         input_accessor_{input},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
     Index index = item.get_id(0);
     if (index < n_threads_) {
       const T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
@@ -839,16 +797,15 @@ struct ExtractOutputTiles<T, M, N, R, S, ConvType::FilterBackprop,
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE ExtractOutputTiles(
-      Index const /*n_tiles*/, SYCLConv2DParams const& params,
-      read_accessor const input, write_accessor output)
+  ExtractOutputTiles(Index const /*n_tiles*/, SYCLConv2DParams const& params,
+                     read_accessor const input, write_accessor output)
       : n_threads_{params.features_ * params.channels_},
         n_features_{params.features_},
         n_channels_{params.channels_},
         input_accessor_{input},
         output_accessor_{output} {}
 
-  inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
+  inline SNN_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
     Index index = item.get_id(0);
     if (index < n_threads_) {
       const T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
