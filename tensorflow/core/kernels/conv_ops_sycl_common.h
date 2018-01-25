@@ -193,14 +193,15 @@ namespace sycl_conv {
 // provide a number of functions here to work around this.
 template <typename Functor, typename T, typename Index, typename Arg>
 static cl::sycl::event launch_transform(Eigen::SyclDevice const& device,
-                             T const* const input, T* const transform,
-                             const Index n_items,
-                             SYCLConv2DParams const& params, Arg arg) {
+                                        T const* const input,
+                                        T* const transform, Index const n_items,
+                                        SYCLConv2DParams const& params,
+                                        Arg arg) {
   static constexpr auto read_mode = Functor::read_mode;
   static constexpr auto write_mode = Functor::write_mode;
 
-  const Index workgroup_size = device.maxSyclThreadsPerBlock();
-  const Index n_threads = RoundUpToNearestMultiple(n_items, workgroup_size);
+  Index const workgroup_size = device.maxSyclThreadsPerBlock();
+  Index const n_threads = RoundUpToNearestMultiple(n_items, workgroup_size);
 
   auto event = device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
     auto input_access = device.get_sycl_accessor<read_mode>(cgh, input);
@@ -215,15 +216,15 @@ static cl::sycl::event launch_transform(Eigen::SyclDevice const& device,
 template <typename Functor, typename T, typename Index, typename Arg1,
           typename Arg2>
 static cl::sycl::event launch_transform(Eigen::SyclDevice const& device,
-                             T const* const input, T* const transform,
-                             const Index n_items,
-                             SYCLConv2DParams const& params, Arg1 arg1,
-                             Arg2 arg2) {
+                                        T const* const input,
+                                        T* const transform, Index const n_items,
+                                        SYCLConv2DParams const& params,
+                                        Arg1 arg1, Arg2 arg2) {
   static constexpr auto read_mode = Functor::read_mode;
   static constexpr auto write_mode = Functor::write_mode;
 
-  const Index workgroup_size = device.maxSyclThreadsPerBlock();
-  const Index n_threads = RoundUpToNearestMultiple(n_items, workgroup_size);
+  Index const workgroup_size = device.maxSyclThreadsPerBlock();
+  Index const n_threads = RoundUpToNearestMultiple(n_items, workgroup_size);
 
   auto event = device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
     auto input_access = device.get_sycl_accessor<read_mode>(cgh, input);
@@ -238,15 +239,15 @@ static cl::sycl::event launch_transform(Eigen::SyclDevice const& device,
 template <typename Functor, typename T, typename Index, typename Arg1,
           typename Arg2, typename Arg3>
 static cl::sycl::event launch_transform(Eigen::SyclDevice const& device,
-                             T const* const input, T* const transform,
-                             const Index n_items,
-                             SYCLConv2DParams const& params, Arg1 arg1,
-                             Arg2 arg2, Arg3 arg3) {
+                                        T const* const input,
+                                        T* const transform, Index const n_items,
+                                        SYCLConv2DParams const& params,
+                                        Arg1 arg1, Arg2 arg2, Arg3 arg3) {
   static constexpr auto read_mode = Functor::read_mode;
   static constexpr auto write_mode = Functor::write_mode;
 
-  const Index workgroup_size = device.maxSyclThreadsPerBlock();
-  const Index n_threads = RoundUpToNearestMultiple(n_items, workgroup_size);
+  Index const workgroup_size = device.maxSyclThreadsPerBlock();
+  Index const n_threads = RoundUpToNearestMultiple(n_items, workgroup_size);
 
   auto event = device.sycl_queue().submit([&](cl::sycl::handler& cgh) {
     auto input_access = device.get_sycl_accessor<read_mode>(cgh, input);
@@ -262,10 +263,11 @@ static cl::sycl::event launch_transform(Eigen::SyclDevice const& device,
 template <typename Functor, typename T, typename Index, typename Arg1,
           typename Arg2, typename Arg3, typename Arg4>
 static cl::sycl::event launch_transform(Eigen::SyclDevice const& device,
-                             T const* const input, T* const transform,
-                             const Index n_items,
-                             SYCLConv2DParams const& params, Arg1 arg1,
-                             Arg2 arg2, Arg3 arg3, Arg4 arg4) {
+                                        T const* const input,
+                                        T* const transform, Index const n_items,
+                                        SYCLConv2DParams const& params,
+                                        Arg1 arg1, Arg2 arg2, Arg3 arg3,
+                                        Arg4 arg4) {
   static constexpr auto read_mode = Functor::read_mode;
   static constexpr auto write_mode = Functor::write_mode;
 
@@ -339,35 +341,22 @@ static void launch_matmul(Eigen::SyclDevice const& device, T const* const lhs,
     }
   }
 }
-template <bool trans_lhs, bool trans_rhs, typename T>
+template <bool trans_lhs, bool trans_rhs, typename T, typename Index>
 static void launch_batch_matmul(Eigen::SyclDevice const& d,
                                 T const* const x_ptr, T const* const y_ptr,
-                                T* const z_ptr, const int batches, const int m,
-                                const int k, const int n) {
-  static constexpr auto lhs_dim = trans_lhs ? 0 : 1;
-  static constexpr auto rhs_dim = trans_rhs ? 1 : 0;
-  using TensorShape = Eigen::DSizes<Eigen::DenseIndex, 3>;
-  using TensorType = Eigen::Tensor<T, 3, Eigen::RowMajor, Eigen::DenseIndex>;
-  using Tensor = Eigen::TensorMap<TensorType, Eigen::Aligned>;
-  using ConstTensorType =
-      Eigen::Tensor<T const, 3, Eigen::RowMajor, Eigen::DenseIndex>;
-  using ConstTensor = Eigen::TensorMap<ConstTensorType, Eigen::Aligned>;
-  using ContractDims =
-      Eigen::IndexPairList<Eigen::type2indexpair<lhs_dim, rhs_dim>>;
-
-  TensorShape const x_shape{batches, trans_lhs ? k : m, trans_lhs ? m : k};
-  TensorShape const y_shape{batches, trans_rhs ? n : k, trans_rhs ? k : n};
-  TensorShape const z_shape{batches, m, n};
-
-  ConstTensor in_x{x_ptr, x_shape};
-  ConstTensor in_y{y_ptr, y_shape};
-  Tensor out{z_ptr, z_shape};
+                                T* const z_ptr, Index const batches,
+                                Index const m, Index const k, Index const n) {
+  Index const x_size = m * k;
+  Index const y_size = k * n;
+  Index const z_size = m * n;
 
   for (int i = 0; i < batches; ++i) {
-    auto x = in_x.template chip<0>(i);
-    auto y = in_y.template chip<0>(i);
-    auto z = out.template chip<0>(i);
-    z.device(d) = x.contract(y, ContractDims{});
+    Index const x_offset = x_size * i;
+    Index const y_offset = y_size * i;
+    Index const z_offset = z_size * i;
+    launch_matmul<trans_lhs, trans_rhs>(d, x_ptr + x_offset, y_ptr + y_offset,
+                                        z_ptr + z_offset, static_cast<T>(0), m,
+                                        k, n);
   }
 }
 }  // namespace sycl_conv
