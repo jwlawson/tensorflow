@@ -38,10 +38,11 @@ struct InputTile {
     for (int r = 0; r < A; ++r) {
       SNN_PRAGMA_UNROLL
       for (int c = 0; c < B; ++c) {
-        data[r][c] = (r < firstr || c < firstc || r + rstart >= n_rows ||
-                      c + cstart >= n_cols)
-                         ? static_cast<_T>(0)
-                         : input[(r * n_cols + c) * n_channels];
+        data[r][c] =
+            (r < firstr || c < firstc || r + rstart >= n_rows ||
+             c + cstart >= n_cols)
+                ? static_cast<T>(0)
+                : helpers::io::Load<T>()(input, (r * n_cols + c) * n_channels);
       }
     }
   }
@@ -74,7 +75,9 @@ struct FilterTile<T, M, N, R, S, ConvType::Forward> final
                                       int const feature, int const n_channels,
                                       int const n_features) {
     input += channel * n_features + feature;
+    SNN_PRAGMA_UNROLL
     for (int r = 0; r < R; ++r) {
+      SNN_PRAGMA_UNROLL
       for (int c = 0; c < S; ++c) {
         int idx = (r * S + c) * n_channels * n_features;
         data[r][c] = input[idx];
@@ -102,7 +105,9 @@ struct FilterTile<T, M, N, R, S, ConvType::InputBackprop> final
                                       int const feature, int const n_channels,
                                       int const n_features) {
     input += channel * n_features + feature;
+    SNN_PRAGMA_UNROLL
     for (int r = 0; r < R; ++r) {
+      SNN_PRAGMA_UNROLL
       for (int c = 0; c < S; ++c) {
         // Here the transforms (R - 1 - r) and (S - 1 - c) mirror the filter
         // data. Note that the channel and feature dims were switched in the
@@ -272,7 +277,7 @@ struct OutputData {
     for (int r = 0; r < A; ++r) {
       for (int c = 0; c < B; ++c) {
         const int idx = (r * B + c) * n_tiles * n_channels;
-        output[idx] = tile.data[r][c];
+        helpers::io::Store<T>()(output, idx, tile.data[r][c]);
       }
     }
   }
@@ -352,7 +357,8 @@ struct OutputData {
     }
   }
 };
-template <typename T, int M, int N, int R, int S, ConvType CType>
+template <typename T, int channel_vector, int M, int N, int R, int S,
+          ConvType CType>
 struct ExtractInputTiles {
   using Index = int;
   using buffer_data = uint8_t;
@@ -363,13 +369,15 @@ struct ExtractInputTiles {
       cl::sycl::accessor<buffer_data, 1, write_mode, global_access>;
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
+  using VecType = cl::sycl::vec<T, channel_vector>;
 
   ExtractInputTiles(Index const in_offset, Index const n_tiles,
                     Index const n_tile_rows, Index const n_tile_cols,
                     SYCLConv2DParams const& params, read_accessor const input,
                     write_accessor output)
       : in_offset_{in_offset},
-        n_elems_{params.channels_ * n_tile_cols * n_tile_rows * params.batch_},
+        n_elems_{params.channels_ * n_tile_cols * n_tile_rows * params.batch_ /
+                 channel_vector},
         n_tiles_{n_tiles},
         n_tile_rows_{n_tile_rows},
         n_tile_cols_{n_tile_cols},
@@ -389,9 +397,11 @@ struct ExtractInputTiles {
       T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
 
       const helpers::TensorIndex2D tile_channel_idx =
-          helpers::unflatten2d<Index, false>(index, n_channels_, n_channels_);
+          helpers::unflatten2d<Index, false>(index,
+                                             n_channels_ / channel_vector,
+                                             n_channels_ / channel_vector);
+      const Index channel_idx = tile_channel_idx.s1 * channel_vector;
       const Index tile_idx = tile_channel_idx.s0;
-      const Index channel_idx = tile_channel_idx.s1;
 
       const helpers::TensorIndex3D tile_tensor_idx =
           helpers::unflatten3d<Index, false>(
@@ -406,13 +416,13 @@ struct ExtractInputTiles {
       const Index rstart = row_idx * M - n_pad_rows_;
       const Index firstr = rstart < 0 ? -rstart : 0;
 
-      InputTile<T, M, N, R, S> inp(input_data, batch, rstart, n_in_rows_,
-                                   cstart, n_in_cols_, channel_idx, n_channels_,
-                                   firstr, firstc);
+      InputTile<VecType, M, N, R, S> inp(
+          input_data, batch, rstart, n_in_rows_, cstart, n_in_cols_,
+          channel_idx, n_channels_, firstr, firstc);
 
-      OutputData<T, M, N, R, S>::write_transformed_input(
+      OutputData<VecType, M, N, R, S>::write_transformed_input(
           output_data, tile_idx, channel_idx, n_tiles_, n_channels_,
-          TransformedInputTile<T, M, N, R, S>{inp});
+          TransformedInputTile<VecType, M, N, R, S>{inp});
     }
   }
 
@@ -430,8 +440,8 @@ struct ExtractInputTiles {
   const read_accessor input_accessor_;
   write_accessor output_accessor_;
 };
-template <typename T, int M, int N, int R, int S>
-struct ExtractInputTiles<T, M, N, R, S, ConvType::FilterBackprop> {
+template <typename T, int channel_vector, int M, int N, int R, int S>
+struct ExtractInputTiles<T, channel_vector, M, N, R, S, ConvType::FilterBackprop> {
   using Index = int;
   using buffer_data = uint8_t;
   static constexpr auto read_mode = cl::sycl::access::mode::read;
@@ -441,13 +451,15 @@ struct ExtractInputTiles<T, M, N, R, S, ConvType::FilterBackprop> {
       cl::sycl::accessor<buffer_data, 1, write_mode, global_access>;
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
+  using VecType = cl::sycl::vec<T, channel_vector>;
 
   ExtractInputTiles(Index const in_offset, Index const n_tiles,
                     Index const n_tile_rows, Index const n_tile_cols,
                     SYCLConv2DParams const& params, read_accessor const input,
                     write_accessor output)
       : in_offset_{in_offset},
-        n_elems_{params.channels_ * n_tile_cols * n_tile_rows * params.batch_},
+        n_elems_{params.channels_ * n_tile_cols * n_tile_rows * params.batch_ /
+                 channel_vector},
         n_tiles_{n_tiles},
         n_tile_rows_{n_tile_rows},
         n_tile_cols_{n_tile_cols},
@@ -467,9 +479,11 @@ struct ExtractInputTiles<T, M, N, R, S, ConvType::FilterBackprop> {
       T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
 
       const helpers::TensorIndex2D tile_channel_idx =
-          helpers::unflatten2d<Index, false>(index, n_channels_, n_channels_);
+          helpers::unflatten2d<Index, false>(index,
+                                             n_channels_ / channel_vector,
+                                             n_channels_ / channel_vector);
+      const Index channel_idx = tile_channel_idx.s1 * channel_vector;
       const Index tile_idx = tile_channel_idx.s0;
-      const Index channel_idx = tile_channel_idx.s1;
 
       const helpers::TensorIndex3D tile_tensor_idx =
           helpers::unflatten3d<Index, false>(
@@ -484,12 +498,12 @@ struct ExtractInputTiles<T, M, N, R, S, ConvType::FilterBackprop> {
       const Index rstart = row_idx * R - n_pad_rows_;
       const Index firstr = rstart < 0 ? -rstart : 0;
 
-      InputTile<T, M, N, R, S> inp(input_data, batch, rstart, n_in_rows_,
-                                   cstart, n_in_cols_, channel_idx, n_channels_,
-                                   firstr, firstc);
-      TransformedInputTile<T, M, N, R, S> trans{inp};
+      InputTile<VecType, M, N, R, S> inp(input_data, batch, rstart, n_in_rows_,
+                                         cstart, n_in_cols_, channel_idx,
+                                         n_channels_, firstr, firstc);
+      TransformedInputTile<VecType, M, N, R, S> trans{inp};
 
-      OutputData<T, M, N, R, S>::write_transformed_input(
+      OutputData<VecType, M, N, R, S>::write_transformed_input(
           output_data, tile_idx, channel_idx, n_tiles_, n_channels_, trans);
     }
   }
