@@ -42,16 +42,23 @@ class winograd_selector final : public algorithm_selector {
 class direct_tiled_selector final : public algorithm_selector {
  public:
   algorithm get_selection(SYCLConv2DParams const& params) override {
-    if (params.window_rows_ == 1 && params.window_cols_ == 1 &&
-        params.stride_rows_ == 1 && params.stride_cols_ == 1) {
+    if (params.window_rows_ != params.window_cols_ ||
+        params.stride_rows_ != params.stride_cols_) {
+      return algorithm::not_supported;
+    }
+    if (params.window_rows_ == 1 && params.stride_rows_ == 2) {
       return algorithm::direct_tiled;
     }
-    if (params.window_rows_ == 3 && params.window_cols_ == 3 &&
-        params.stride_rows_ == 1 && params.stride_cols_ == 1) {
+    if (params.window_rows_ == 1 && params.stride_rows_ == 1) {
       return algorithm::direct_tiled;
     }
-    if (params.window_rows_ == 5 && params.window_cols_ == 5 &&
-        params.stride_rows_ == 1 && params.stride_cols_ == 1) {
+    if (params.window_rows_ == 3 && params.stride_rows_ == 2) {
+      return algorithm::direct_tiled;
+    }
+    if (params.window_rows_ == 3 && params.stride_rows_ == 1) {
+      return algorithm::direct_tiled;
+    }
+    if (params.window_rows_ == 5 && params.stride_rows_ == 1) {
       return algorithm::direct_tiled;
     }
     return algorithm::not_supported;
