@@ -175,13 +175,19 @@ struct LaunchConv2DTiled {
                       false, window, stride)                              \
   }
     // clang-format off
-    if(CType == ConvType::InputBackprop) {
-      LAUNCH_IF_MATCH(params, 3, 1, 3, 4, 1, 4)
+    if(CType == ConvType::Forward) {
+      LAUNCH_IF_MATCH(params, 1, 2, 2, 2, 1, 4)
+      LAUNCH_IF_MATCH(params, 3, 2, 2, 2, 1, 4)
     }
-    else LAUNCH_IF_MATCH(params, 3, 1, 3, 4, 1, 2)
-    else LAUNCH_IF_MATCH(params, 3, 1, 3, 4, 1, 1)
-    else LAUNCH_IF_MATCH(params, 5, 1, 2, 4, 1, 1)
-    else LAUNCH_IF_MATCH(params, 1, 1, 2, 2, 1, 1)
+    if(CType == ConvType::InputBackprop) {
+      //LAUNCH_IF_MATCH(params, 3, 1, 3, 4, 1, 4)
+    }
+    LAUNCH_IF_MATCH(params, 3, 1, 2, 2, 1, 4)
+    LAUNCH_IF_MATCH(params, 3, 1, 3, 4, 1, 1)
+    LAUNCH_IF_MATCH(params, 5, 1, 2, 2, 1, 2)
+    LAUNCH_IF_MATCH(params, 5, 1, 2, 4, 1, 1)
+    LAUNCH_IF_MATCH(params, 1, 1, 2, 2, 1, 4)
+    LAUNCH_IF_MATCH(params, 1, 1, 2, 2, 1, 1)
 
     return false;
     // clang-format on

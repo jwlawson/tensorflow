@@ -311,16 +311,17 @@ struct FwdAccumulator<T, 16, out_vector_width, ft_rows, ft_cols> {
     return res;
   }
 };
-template <typename T, int channel_vector, int feature_vector, int n_window_rows,
-          int n_window_cols, int n_out_rows, int n_out_cols>
+template <int stride, typename T, int channel_vector, int feature_vector,
+          int n_window_rows, int n_window_cols, int n_out_rows, int n_out_cols>
 inline SNN_ALWAYS_INLINE void convolve_1xw_one_row_fwd(
-    InputRow<T, channel_vector, n_out_cols + n_window_rows - 1> const& input,
+    InputRow<T, channel_vector,
+             (n_out_cols - 1) * stride + n_window_rows> const& input,
     FilterTile<T, channel_vector, feature_vector, n_window_rows,
                n_window_cols> const& filter,
     OutputTile<T, feature_vector, n_out_rows, n_out_cols>& output,
     int const out_row, int const filter_row) {
   for (int out_col = 0; out_col < n_out_cols; ++out_col) {
-    int const in_offset = out_col;
+    int const in_offset = out_col * stride;
     for (int filter_col = 0; filter_col < n_window_cols; ++filter_col) {
       output.data[out_row][out_col] =
           AccumulateOutput<ConvType::Forward, T, channel_vector, feature_vector,
@@ -330,19 +331,21 @@ inline SNN_ALWAYS_INLINE void convolve_1xw_one_row_fwd(
     }
   }
 }
-template <typename T, int channel_vector, int feature_vector, int n_window_rows,
-          int n_window_cols, int n_out_rows, int n_out_cols>
+template <int stride, typename T, int channel_vector, int feature_vector,
+          int n_window_rows, int n_window_cols, int n_out_rows, int n_out_cols>
 inline SNN_ALWAYS_INLINE void convolve_1xw_whole_tile_fwd(
-    InputRow<T, channel_vector, n_out_cols + n_window_rows - 1> const& input,
+    InputRow<T, channel_vector,
+             (n_out_cols - 1) * stride + n_window_rows> const& input,
     FilterTile<T, channel_vector, feature_vector, n_window_rows,
                n_window_cols> const& filter,
     OutputTile<T, feature_vector, n_out_rows, n_out_cols>& output,
     int const row_idx) {
   SNN_PRAGMA_UNROLL
   for (int out_row = 0; out_row < n_out_rows; ++out_row) {
-    int const filter_row = row_idx - out_row;
+    int const filter_row = row_idx - out_row * stride;
     if (filter_row >= 0 && filter_row < n_window_rows) {
-      convolve_1xw_one_row_fwd(input, filter, output, out_row, filter_row);
+      convolve_1xw_one_row_fwd<stride>(input, filter, output, out_row,
+                                       filter_row);
     }
   }
 }
@@ -421,7 +424,8 @@ struct Conv2DTiledSYCL<T, ConvType::Forward, tile_rows, tile_cols,
   using buffer_data = uint8_t;
   using index_div_type =
       typename fast_div::index_div<Index, use_fast_div>::type;
-  static constexpr auto input_tile_width = tile_cols + window_cols - 1;
+  static constexpr auto input_tile_width =
+      (tile_cols - 1) * static_stride + window_cols;
   static constexpr auto CType = ConvType::Forward;
   static constexpr auto read_mode = cl::sycl::access::mode::read;
   static constexpr auto write_mode = cl::sycl::access::mode::discard_write;
@@ -465,10 +469,8 @@ struct Conv2DTiledSYCL<T, ConvType::Forward, tile_rows, tile_cols,
       const Index row_idx = tensor_idx.s1 * tile_rows;
       const Index batch = tensor_idx.s0;
 
-      const Index cstart =
-          col_idx * SNN_STATIC_PARAM(stride, cols_) - SNN_PARAM(pad_cols_);
-      const Index rstart =
-          row_idx * SNN_STATIC_PARAM(stride, rows_) - SNN_PARAM(pad_rows_);
+      const Index cstart = col_idx * static_stride - SNN_PARAM(pad_cols_);
+      const Index rstart = row_idx * static_stride - SNN_PARAM(pad_rows_);
 
       OutputTile<T, feature_vector_width, tile_rows, tile_cols> out_tile{};
       const T* input_data_n = input_data +
@@ -484,7 +486,8 @@ struct Conv2DTiledSYCL<T, ConvType::Forward, tile_rows, tile_cols,
                           SNN_PARAM(features_)};
           SNN_PRAGMA_UNROLL
           for (Index r = rstart, i = 0;
-               i < window_rows + tile_rows - 1 && r < SNN_PARAM(in_rows_);
+               i < window_rows + (tile_rows - 1) * static_stride &&
+               r < SNN_PARAM(in_rows_);
                ++r, ++i) {
             if (r >= 0) {
               InputRow<T, channel_vector_width, input_tile_width> input_tile{
@@ -492,7 +495,8 @@ struct Conv2DTiledSYCL<T, ConvType::Forward, tile_rows, tile_cols,
                   SNN_PARAM(in_rows_),  cstart,
                   SNN_PARAM(in_cols_),  channel,
                   SNN_PARAM(channels_), check_bounds_tag{}};
-              convolve_1xw_whole_tile_fwd(input_tile, filter_tile, out_tile, i);
+              convolve_1xw_whole_tile_fwd<static_stride>(
+                  input_tile, filter_tile, out_tile, i);
             }
           }
         }
@@ -503,7 +507,8 @@ struct Conv2DTiledSYCL<T, ConvType::Forward, tile_rows, tile_cols,
                         SNN_PARAM(features_)};
         SNN_PRAGMA_UNROLL
         for (Index r = rstart, i = 0;
-             i < window_rows + tile_rows - 1 && r < SNN_PARAM(in_rows_);
+             i < window_rows + (tile_rows - 1) * static_stride &&
+             r < SNN_PARAM(in_rows_);
              ++r, ++i) {
           if (r >= 0) {
             InputRow<T, 1, input_tile_width> input_tile{
@@ -511,7 +516,8 @@ struct Conv2DTiledSYCL<T, ConvType::Forward, tile_rows, tile_cols,
                 SNN_PARAM(in_rows_),  cstart,
                 SNN_PARAM(in_cols_),  channel,
                 SNN_PARAM(channels_), check_bounds_tag{}};
-            convolve_1xw_whole_tile_fwd(input_tile, filter_tile, out_tile, i);
+            convolve_1xw_whole_tile_fwd<static_stride>(input_tile, filter_tile,
+                                                       out_tile, i);
           }
         }
       }
@@ -560,7 +566,7 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
         n_tile_rows_{RoundRatioUpAboveZero(params.in_rows_, tile_rows)},
         n_elems_{params.batch_ * n_tile_rows_ * n_tile_cols_ *
                  params.channels_ / channel_vector_width},
-        div_channels_{params.channels_},
+        div_channels_{params.channels_ / channel_vector_width},
         div_n_tile_cols_{n_tile_cols_},
         div_n_tile_rows_{n_tile_rows_},
         SNN_CONSTRUCT_CONV_PARAMS(params),
@@ -580,8 +586,9 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
       const helpers::TensorIndex4D tensor_idx =
           helpers::unflatten4d<Index, use_fast_div>(
               index, div_n_tile_rows_, n_tile_rows_, div_n_tile_cols_,
-              n_tile_cols_, div_channels_, SNN_PARAM(channels_));
-      const Index channel = tensor_idx.s3;
+              n_tile_cols_, div_channels_,
+              SNN_PARAM(channels_) / channel_vector_width);
+      const Index channel = tensor_idx.s3 * channel_vector_width;
       const Index col_idx = tensor_idx.s2 * tile_cols;
       const Index row_idx = tensor_idx.s1 * tile_rows;
       const Index batch = tensor_idx.s0;
