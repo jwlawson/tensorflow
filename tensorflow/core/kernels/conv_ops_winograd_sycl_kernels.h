@@ -604,9 +604,9 @@ struct ExtractKernelTiles<T, M, N, R, S, ConvType::InputBackprop> {
       T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
 
       const helpers::TensorIndex2D feature_channel_idx =
-          helpers::unflatten2d<Index, false>(index, n_channels_, n_channels_);
-      const Index feature_idx = feature_channel_idx.s0;
-      const Index channel_idx = feature_channel_idx.s1;
+          helpers::unflatten2d<Index, false>(index, n_features_, n_features_);
+      const Index feature_idx = feature_channel_idx.s1;
+      const Index channel_idx = feature_channel_idx.s0;
 
       FilterTile<T, M, N, R, S, CType> filter(
           kernel_data, channel_idx, feature_idx, n_channels_, n_features_);
@@ -624,7 +624,7 @@ struct ExtractKernelTiles<T, M, N, R, S, ConvType::InputBackprop> {
        * called with this tensor transposed.
        */
       OutputData<T, M, N, R, S>::write_transformed_filter(
-          output_data, channel_idx, feature_idx, n_channels_, n_features_,
+          output_data, feature_idx, channel_idx, n_features_, n_channels_,
           transformed);
     }
   }

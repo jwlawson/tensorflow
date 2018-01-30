@@ -152,7 +152,7 @@ struct LaunchMatmulWinograd {
   static constexpr int A = M + R - 1;
   static constexpr int B = N + S - 1;
   static constexpr bool trans_input = false;
-  static constexpr bool trans_filter = (CType == ConvType::Forward);
+  static constexpr bool trans_filter = true;//(CType == ConvType::Forward);
   using InputTransform =
       winograd::ExtractInputTiles<T, channel_vector, M, N, R, S, CType>;
   using FilterTransform = winograd::ExtractKernelTiles<T, M, N, R, S, CType>;
