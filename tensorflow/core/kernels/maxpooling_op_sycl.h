@@ -13,6 +13,8 @@
 
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 
+#include "tensorflow/core/kernels/conv_ops_sycl_kernel_helpers.h"
+#include "tensorflow/core/kernels/conv_ops_sycl_kernel_macros.h"
 #include "tensorflow/core/kernels/pooling_ops_common.h"
 #include "tensorflow/core/platform/macros.h"
 
@@ -33,6 +35,40 @@ RoundUpToNearestMultiple(const IntegerType val, const IntegerType multiplier) {
   const IntegerType diff = val % multiplier;
   return val + (multiplier - diff);
 }
+template <typename T>
+struct MaxComparator {
+  inline SNN_ALWAYS_INLINE static bool greater_than(T lhs, T rhs) {
+    return lhs > rhs;
+  }
+};
+template <typename T>
+struct MaxComparatorWithNans {
+  inline SNN_ALWAYS_INLINE static bool greater_than(T lhs, T rhs) {
+    return !(lhs <= rhs);
+  }
+};
+template <typename T>
+struct Equal {
+  inline SNN_ALWAYS_INLINE static bool is_equal(T lhs, T rhs) {
+    return lhs == rhs;
+  }
+};
+template <typename T>
+struct EqualWithNans {
+  inline SNN_ALWAYS_INLINE static bool is_equal(T lhs, T rhs) {
+    return lhs == rhs || (std::isnan(lhs) && std::isnan(rhs));
+  }
+};
+template <typename T, typename Comparator>
+struct MaxPoolReducer {
+  MaxPoolReducer() : value{std::numeric_limits<T>::lowest()} {}
+  inline SNN_ALWAYS_INLINE void operator()(T new_val) {
+    if (Comparator::greater_than(new_val, value)) {
+      value = new_val;
+    }
+  }
+  T value;
+};
 /**
  * MaxPool2D SYCL kernel. Expects the number of threads to be equal to the
  * number of elements in the output tensor.
@@ -41,7 +77,7 @@ RoundUpToNearestMultiple(const IntegerType val, const IntegerType multiplier) {
  * all values in the window to find the maximum value. This value is then
  * copied into that output element.
  */
-template <typename T>
+template <typename T, typename Comparator>
 class MaxPool2DSYCL {
  public:
   static constexpr auto read_mode = cl::sycl::access::mode::read;
@@ -52,8 +88,7 @@ class MaxPool2DSYCL {
   using write_accessor =
       cl::sycl::accessor<uint8_t, 1, write_mode, global_access>;
 
-  MaxPool2DSYCL(const int output_size,
-                const PoolParameters& params,
+  MaxPool2DSYCL(const int output_size, const PoolParameters& params,
                 const read_accessor input_accessor,
                 write_accessor output_accessor)
       : output_size_{output_size},
@@ -61,33 +96,37 @@ class MaxPool2DSYCL {
         input_accessor_{input_accessor},
         output_accessor_{output_accessor} {}
   inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
-    int index = item.get(0);
+    int index = item.get_id(0);
     if (index < output_size_) {
       T* input_data = ConvertToActualTypeSycl(T, input_accessor_);
       T* output_data = ConvertToActualTypeSycl(T, output_accessor_);
 
-      int n = index;
-      int d = n % p_.depth_;
-      n /= p_.depth_;
-      int cstart = (n % p_.out_cols_) * p_.stride_cols_ - p_.pad_cols_;
+      const helpers::TensorIndex4D index4d = helpers::unflatten4d<int, false>(
+          index, p_.out_rows_, p_.out_rows_, p_.out_cols_, p_.out_cols_,
+          p_.depth_, p_.depth_);
+      const int d = index4d.s3;
+      const int col_idx = index4d.s2;
+      const int row_idx = index4d.s1;
+      const int batch = index4d.s0;
+
+      int cstart = (col_idx % p_.out_cols_) * p_.stride_cols_ - p_.pad_cols_;
       int cend = cl::sycl::min(cstart + p_.window_cols_, p_.in_cols_);
       cstart = cl::sycl::max(cstart, 0);
-      n /= p_.out_cols_;
-      int rstart = (n % p_.out_rows_) * p_.stride_rows_ - p_.pad_rows_;
+
+      int rstart = (row_idx % p_.out_rows_) * p_.stride_rows_ - p_.pad_rows_;
       int rend = cl::sycl::min(rstart + p_.window_rows_, p_.in_rows_);
       rstart = cl::sycl::max(rstart, 0);
-      n /= p_.out_rows_;
-      T maxval = Eigen::NumTraits<T>::lowest();
-      const T* input_data_n = input_data + n * p_.in_cols_ * p_.in_rows_ * p_.depth_;
+
+      MaxPoolReducer<T, Comparator> reducer{};
+      const T* input_data_n =
+          input_data + batch * p_.in_cols_ * p_.in_rows_ * p_.depth_;
       for (int r = rstart; r < rend; ++r) {
         for (int c = cstart; c < cend; ++c) {
           int idx = (r * p_.in_cols_ + c) * p_.depth_ + d;
-          if (input_data_n[idx] > maxval) {
-            maxval = input_data_n[idx];
-          }
+          reducer(input_data_n[idx]);
         }
       }
-      output_data[index] = maxval;
+      output_data[index] = reducer.value;
     }
   }
 
@@ -97,9 +136,9 @@ class MaxPool2DSYCL {
   const read_accessor input_accessor_;
   write_accessor output_accessor_;
 };
-template <typename T>
+template <typename T, typename Comparator>
 struct LaunchMaxPoolingOpSYCL {
-  using Functor = MaxPool2DSYCL<T>;
+  using Functor = MaxPool2DSYCL<T, Comparator>;
   static constexpr auto read_mode = Functor::read_mode;
   static constexpr auto write_mode = Functor::write_mode;
 
@@ -137,7 +176,7 @@ struct LaunchMaxPoolingOpSYCL {
  * determine whether the input value is the first maximum value, and so the
  * error should be propagated back to the corresponding backprop element.
  */
-template <typename T>
+template <typename T, typename EqualCheck>
 class MaxPoolGradSYCL {
  public:
   static constexpr auto read_mode = cl::sycl::access::mode::read;
@@ -148,8 +187,7 @@ class MaxPoolGradSYCL {
   using write_accessor =
       cl::sycl::accessor<uint8_t, 1, write_mode, global_access>;
 
-  MaxPoolGradSYCL(const int output_size,
-                  const SYCL2DPoolParams& params,
+  MaxPoolGradSYCL(const int output_size, const SYCL2DPoolParams& params,
                   const read_accessor input_data_accessor,
                   const read_accessor output_data_accessor,
                   const read_accessor input_backprop_accessor,
@@ -161,37 +199,42 @@ class MaxPoolGradSYCL {
         input_backprop_accessor_{input_backprop_accessor},
         output_backprop_accessor_{output_backprop_accessor} {}
   inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
-    const int index = item.get(0);
+    const int index = item.get_id(0);
     if (index < output_size_) {
       T* input_data = ConvertToActualTypeSycl(T, input_data_accessor_);
       T* output_data = ConvertToActualTypeSycl(T, output_data_accessor_);
       T* input_backprop = ConvertToActualTypeSycl(T, input_backprop_accessor_);
-      T* output_backprop = ConvertToActualTypeSycl(T, output_backprop_accessor_);
+      T* output_backprop =
+          ConvertToActualTypeSycl(T, output_backprop_accessor_);
 
       T output_value = static_cast<T>(0);
-      int n = index;
-      const int d = n % p_.depth_;
-      n /= p_.depth_;
-      const int c = (n % p_.in_cols_) + p_.pad_cols_;
+      const helpers::TensorIndex4D tensor_idx =
+          helpers::unflatten4d<int, false>(index, p_.in_rows_, p_.in_rows_,
+                                           p_.in_cols_, p_.in_cols_, p_.depth_,
+                                           p_.depth_);
+      const int d = tensor_idx.s3;
+      const int col_idx = tensor_idx.s2;
+      const int row_idx = tensor_idx.s1;
+      const int batch = tensor_idx.s0;
+      const int c = (col_idx % p_.in_cols_) + p_.pad_cols_;
       const int poolcstart = (c < p_.window_cols_)
                                  ? 0
                                  : (c - p_.window_cols_) / p_.stride_cols_ + 1;
       const int poolcend = cl::sycl::min(c / p_.stride_cols_ + 1, p_.out_cols_);
-      n /= p_.in_cols_;
-      const int r = (n % p_.in_rows_) + p_.pad_rows_;
+      const int r = (row_idx % p_.in_rows_) + p_.pad_rows_;
       const int poolrstart = (r < p_.window_rows_)
                                  ? 0
                                  : (r - p_.window_rows_) / p_.stride_rows_ + 1;
       const int poolrend = cl::sycl::min(r / p_.stride_rows_ + 1, p_.out_rows_);
-      n /= p_.in_rows_;
-      const int index_no_n = index - n * p_.in_cols_ * p_.in_rows_ * p_.depth_;
+      const int index_no_n =
+          index - batch * p_.in_cols_ * p_.in_rows_ * p_.depth_;
 
       const T* input_data_n =
-          input_data + n * p_.in_cols_ * p_.in_rows_ * p_.depth_;
+          input_data + batch * p_.in_cols_ * p_.in_rows_ * p_.depth_;
       const T* output_data_n =
-          output_data + n * p_.out_cols_ * p_.out_rows_ * p_.depth_;
+          output_data + batch * p_.out_cols_ * p_.out_rows_ * p_.depth_;
       const T* input_backprop_n =
-          input_backprop + n * p_.out_cols_ * p_.out_rows_ * p_.depth_;
+          input_backprop + batch * p_.out_cols_ * p_.out_rows_ * p_.depth_;
 
       for (int poolr = poolrstart; poolr < poolrend; ++poolr) {
         int rstart = poolr * p_.stride_rows_ - p_.pad_rows_;
@@ -206,15 +249,16 @@ class MaxPoolGradSYCL {
           const int output_data_idx =
               (poolr * p_.out_cols_ + poolc) * p_.depth_ + d;
           bool should_continue = true;
-          bool is_max = (input_data[index] == output_data_n[output_data_idx]);
+          bool is_max = EqualCheck::is_equal(input_data[index],
+                                             output_data_n[output_data_idx]);
           for (int win_r = rstart; win_r < rend && should_continue; ++win_r) {
             for (int win_c = cstart; win_c < cend && should_continue; ++win_c) {
               const int input_data_idx =
                   (win_r * p_.in_cols_ + win_c) * p_.depth_ + d;
               if (input_data_idx == index_no_n) {
                 should_continue = false;
-              } else if (input_data_n[input_data_idx] ==
-                         output_data_n[output_data_idx]) {
+              } else if (EqualCheck::is_equal(input_data_n[input_data_idx],
+                                              output_data_n[output_data_idx])) {
                 should_continue = false;
                 is_max = false;
               }
@@ -238,9 +282,9 @@ class MaxPoolGradSYCL {
   const read_accessor input_backprop_accessor_;
   write_accessor output_backprop_accessor_;
 };
-template <typename T>
+template <typename T, typename Equal>
 struct LaunchMaxPoolingGradOpSYCL {
-  using Functor = MaxPoolGradSYCL<T>;
+  using Functor = MaxPoolGradSYCL<T, Equal>;
   static constexpr auto read_mode = Functor::read_mode;
   static constexpr auto write_mode = Functor::write_mode;
 
@@ -271,8 +315,9 @@ struct LaunchMaxPoolingGradOpSYCL {
           input_backprop_buffer.template get_access<read_mode>(cgh);
       auto output_backprop_access =
           output_backprop_buffer.template get_access<write_mode>(cgh);
-      Functor max_pool(output_size, params, input_data_access, output_data_access,
-                       input_backprop_access, output_backprop_access);
+      Functor max_pool(output_size, params, input_data_access,
+                       output_data_access, input_backprop_access,
+                       output_backprop_access);
 
       cgh.parallel_for(cl::sycl::range<1>(n_threads), max_pool);
     });
@@ -299,8 +344,7 @@ class MaxPoolGradGradSYCL {
   using write_accessor =
       cl::sycl::accessor<uint8_t, 1, write_mode, global_access>;
 
-  MaxPoolGradGradSYCL(const int output_size,
-                      const PoolParameters& params,
+  MaxPoolGradGradSYCL(const int output_size, const PoolParameters& params,
                       const read_accessor input_data_accessor,
                       const read_accessor output_data_accessor,
                       const read_accessor input_backprop_accessor,
@@ -312,28 +356,33 @@ class MaxPoolGradGradSYCL {
         input_backprop_accessor_{input_backprop_accessor},
         output_backprop_accessor_{output_backprop_accessor} {}
   inline TF_ATTRIBUTE_ALWAYS_INLINE void operator()(cl::sycl::item<1> item) {
-    int index = item.get(0);
+    int index = item.get_id(0);
     if (index < output_size_) {
       T* input_data = ConvertToActualTypeSycl(T, input_data_accessor_);
       T* output_data = ConvertToActualTypeSycl(T, output_data_accessor_);
       T* input_backprop = ConvertToActualTypeSycl(T, input_backprop_accessor_);
-      T* output_backprop = ConvertToActualTypeSycl(T, output_backprop_accessor_);
+      T* output_backprop =
+          ConvertToActualTypeSycl(T, output_backprop_accessor_);
 
-      int n = index;
-      int d = n % p_.depth_;
-      n /= p_.depth_;
-      int cstart = (n % p_.out_cols_) * p_.stride_cols_ - p_.pad_cols_;
+      const helpers::TensorIndex4D tensor_idx =
+          helpers::unflatten4d<int, false>(index, p_.out_rows_, p_.out_rows_,
+                                           p_.out_cols_, p_.out_cols_,
+                                           p_.depth_, p_.depth_);
+      const int d = tensor_idx.s3;
+      const int col_idx = tensor_idx.s2;
+      const int row_idx = tensor_idx.s1;
+      const int batch = tensor_idx.s0;
+
+      int cstart = (col_idx % p_.out_cols_) * p_.stride_cols_ - p_.pad_cols_;
       int cend = cl::sycl::min(cstart + p_.window_cols_, p_.in_cols_);
       cstart = cl::sycl::max(cstart, 0);
-      n /= p_.out_cols_;
-      int rstart = (n % p_.out_rows_) * p_.stride_rows_ - p_.pad_rows_;
+      int rstart = (row_idx % p_.out_rows_) * p_.stride_rows_ - p_.pad_rows_;
       int rend = cl::sycl::min(rstart + p_.window_rows_, p_.in_rows_);
       rstart = cl::sycl::max(rstart, 0);
-      n /= p_.out_rows_;
       int maxidx = -1;
       bool should_stop = false;
       const T* input_data_n =
-          input_data + n * p_.in_cols_ * p_.in_rows_ * p_.depth_;
+          input_data + batch * p_.in_cols_ * p_.in_rows_ * p_.depth_;
       for (int r = rstart; r < rend && !should_stop; ++r) {
         for (int c = cstart; c < cend && !should_stop; ++c) {
           int idx = (r * p_.in_cols_ + c) * p_.depth_ + d;
@@ -345,7 +394,8 @@ class MaxPoolGradGradSYCL {
       }
       if (maxidx != -1) {
         output_backprop[index] =
-            input_backprop[n * p_.in_rows_ * p_.in_cols_ * p_.depth_ + maxidx];
+            input_backprop[batch * p_.in_rows_ * p_.in_cols_ * p_.depth_ +
+                           maxidx];
       }
     }
   }
