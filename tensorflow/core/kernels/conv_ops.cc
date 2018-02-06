@@ -435,7 +435,7 @@ TF_CALL_float(REGISTER_CPU);
 #endif  // USE_GEMM_FOR_CONV
 
 // To be used inside depthwise_conv_op.cc.
-template class LaunchConv2DOp<CPUDevice, float>;
+template struct LaunchConv2DOp<CPUDevice, float>;
 
 #if GOOGLE_CUDA
 int64 GetCudnnWorkspaceLimit(const string& envvar_in_mb,
