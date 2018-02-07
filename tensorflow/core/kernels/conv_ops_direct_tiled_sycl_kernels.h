@@ -506,7 +506,6 @@ struct Conv2DTiledSYCL<T, ConvType::Forward, tile_rows, tile_cols,
               convolve_1xw_whole_tile_fwd<static_stride>(
                   input_tile, filter_tile, out_tile, i);
             }
-            SNN_SYNC_THREADS
           }
         }
       }
@@ -526,7 +525,6 @@ struct Conv2DTiledSYCL<T, ConvType::Forward, tile_rows, tile_cols,
             convolve_1xw_whole_tile_fwd<static_stride>(input_tile, filter_tile,
                                                        out_tile, i);
           }
-          SNN_SYNC_THREADS
         }
       }
       out_tile.write_out(output_data, batch, row_idx, SNN_PARAM(out_rows_),
@@ -624,8 +622,7 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
                           SNN_PARAM(channels_), feature,
                           SNN_PARAM(features_), mirror_filter_tag{}};
           SNN_PRAGMA_UNROLL
-          for (Index r = rstart, i = first_row;
-               i < window_rows + tile_rows - 1;
+          for (Index r = rstart, i = first_row; i < window_rows + tile_rows - 1;
                ++r, i += static_stride) {
             if (r >= 0 && r < SNN_PARAM(out_rows_)) {
               InputRow<T, feature_vector_width, input_tile_width> input_tile{
@@ -636,7 +633,6 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
               convolve_1xw_whole_tile_bkin<static_stride>(
                   input_tile, filter_tile, out_tile, i, first_col);
             }
-            SNN_SYNC_THREADS
           }
         }
       }
@@ -646,8 +642,7 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
                         SNN_PARAM(channels_), feature,
                         SNN_PARAM(features_), mirror_filter_tag{}};
         SNN_PRAGMA_UNROLL
-        for (Index r = rstart, i = first_row;
-             i < window_rows + tile_rows - 1;
+        for (Index r = rstart, i = first_row; i < window_rows + tile_rows - 1;
              ++r, i += static_stride) {
           if (r >= 0 && r < SNN_PARAM(out_rows_)) {
             InputRow<T, 1, input_tile_width> input_tile{
@@ -658,7 +653,6 @@ struct Conv2DTiledSYCL<T, ConvType::InputBackprop, tile_rows, tile_cols,
             convolve_1xw_whole_tile_bkin<static_stride>(input_tile, filter_tile,
                                                         out_tile, i, first_col);
           }
-          SNN_SYNC_THREADS
         }
       }
       out_tile.write_out(output_data, batch, row_idx, SNN_PARAM(in_rows_),

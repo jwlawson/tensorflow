@@ -74,6 +74,32 @@ class matmul_selector final : public algorithm_selector {
     return algorithm::not_supported;
   }
 };
+class arm_selector final : public algorithm_selector {
+ public:
+  algorithm get_selection(SYCLConv2DParams const& params) override {
+    if (params.window_rows_ == params.window_cols_ && params.stride_rows_ == params.stride_cols_) {
+      if(params.window_rows_ == 1 && params.stride_rows_ == 2) {
+        return algorithm::direct_tiled;
+      }
+      if(params.window_rows_ == 1 && params.stride_rows_ == 1) {
+        return algorithm::direct_tiled;
+      }
+      if(params.window_rows_ == 3 && params.stride_rows_ == 1) {
+        if(params.channels_ < 10) {
+          return algorithm::direct;
+        } else if( params.in_rows_ > 100) {
+          return algorithm::winograd_3x3;
+        } else if (params.in_rows_ > 50) {
+          return algorithm::im2col;
+        } else {
+          return algorithm::direct_tiled;
+        }
+      }
+    }
+    return algorithm::direct;
+  }
+};
+
 template <typename Initial, typename Fallback>
 class fallback_selector final : public algorithm_selector {
   static_assert(std::is_base_of<algorithm_selector, Initial>::value,
