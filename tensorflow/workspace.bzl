@@ -199,9 +199,9 @@ def tf_workspace(path_prefix="", tf_repo_name=""):
   native.new_http_archive(
       name = "eigen_archive",
       urls = [
-         "https://bitbucket.org/mehdi_goli/opencl/get/8bc20c15ae86.tar.gz",
+         "https://bitbucket.org/mehdi_goli/opencl/get/f6675aaf98c5.tar.gz",
       ],
-      strip_prefix = "mehdi_goli-opencl-8bc20c15ae86",
+      strip_prefix = "mehdi_goli-opencl-f6675aaf98c5",
       build_file = str(Label("//third_party:eigen.BUILD")),
   )
 
