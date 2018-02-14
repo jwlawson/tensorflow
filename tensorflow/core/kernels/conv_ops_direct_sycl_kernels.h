@@ -9,6 +9,7 @@
 
 #include "tensorflow/core/kernels/conv_ops_sycl_common.h"
 #include "tensorflow/core/kernels/conv_ops_sycl_fast_div.h"
+#include "tensorflow/core/kernels/conv_ops_sycl_index_helpers.h"
 #include "tensorflow/core/kernels/conv_ops_sycl_kernel_helpers.h"
 #include "tensorflow/core/kernels/conv_ops_sycl_kernel_macros.h"
 #include "tensorflow/core/kernels/conv_ops_sycl_param_macros.h"
@@ -37,9 +38,9 @@ struct Conv2DSYCL<T, ConvType::Forward, use_fast_div, static_window,
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline Conv2DSYCL(Index n_elems, const SYCLConv2DParams& params,
-                    const read_accessor input, const read_accessor kernel,
-                    write_accessor output)
+  Conv2DSYCL(Index n_elems, const SYCLConv2DParams& params,
+             const read_accessor input, const read_accessor kernel,
+             write_accessor output)
       : n_elems_{params.batch_ * params.out_rows_ * params.out_cols_ *
                  params.features_},
         div_features_{params.features_},
@@ -68,23 +69,21 @@ struct Conv2DSYCL<T, ConvType::Forward, use_fast_div, static_window,
       const Index row_idx = tensor_idx.s1;
       const Index batch = tensor_idx.s0;
 
-      const Index cstart =
-          col_idx * SNN_STATIC_PARAM(stride, cols_) - SNN_PARAM(pad_cols_);
-      const Index rstart =
-          row_idx * SNN_STATIC_PARAM(stride, rows_) - SNN_PARAM(pad_rows_);
+      const Index cstart = helpers::out_window_start(
+          col_idx, SNN_STATIC_PARAM(stride, cols_), SNN_PARAM(pad_cols_));
+      const Index rstart = helpers::out_window_start(
+          row_idx, SNN_STATIC_PARAM(stride, rows_), SNN_PARAM(pad_rows_));
 
       T out_val = static_cast<T>(0);
       const T* input_data_n = input_data +
                               batch * SNN_PARAM(in_cols_) *
                                   SNN_PARAM(in_rows_) * SNN_PARAM(channels_);
-      for (Index r = rstart, i = 0;
-           i < SNN_STATIC_PARAM(window, rows_) && r < SNN_PARAM(in_rows_);
+      for (Index r = rstart, i = 0; i < SNN_STATIC_PARAM(window, rows_);
            ++r, ++i) {
-        if (r >= 0) {
-          for (Index c = cstart, j = 0;
-               j < SNN_STATIC_PARAM(window, cols_) && c < SNN_PARAM(in_cols_);
+        if (r >= 0 && r < SNN_PARAM(in_rows_)) {
+          for (Index c = cstart, j = 0; j < SNN_STATIC_PARAM(window, cols_);
                ++c, ++j) {
-            if (c >= 0) {
+            if (c >= 0 && c < SNN_PARAM(in_cols_)) {
               for (Index channel = 0; channel < SNN_PARAM(channels_);
                    ++channel) {
                 const Index idx =
@@ -130,9 +129,9 @@ struct Conv2DSYCL<T, ConvType::InputBackprop, use_fast_div, static_window,
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline Conv2DSYCL(Index n_elems, const SYCLConv2DParams& params,
-                    const read_accessor input, const read_accessor kernel,
-                    write_accessor output)
+  Conv2DSYCL(Index n_elems, const SYCLConv2DParams& params,
+             const read_accessor input, const read_accessor kernel,
+             write_accessor output)
       : n_elems_{n_elems},
         div_features_{params.features_},
         div_in_rows_{params.in_rows_},
@@ -158,51 +157,50 @@ struct Conv2DSYCL<T, ConvType::InputBackprop, use_fast_div, static_window,
       const Index row_idx = tensor_idx.s1;
       const Index batch = tensor_idx.s0;
 
-      // c is the index in the padded output tensor (ie with lots of extra
-      // zeros), but without the first padding. first_padded_c adds this extra
-      // padding.
-      const Index c = col_idx + SNN_PARAM(pad_cols_);
-      const Index first_padded_c = c - SNN_STATIC_PARAM(window, cols_) + 1;
-      // The first and last output indices affected by this input.
-      const Index last_used_c = c / SNN_STATIC_PARAM(stride, cols_);
-      const Index first_used_c = RoundRatioUpAboveZero(
-          first_padded_c, SNN_STATIC_PARAM(stride, cols_));
-      const Index firstc =
-          first_used_c * SNN_STATIC_PARAM(stride, cols_) - first_padded_c;
-      const Index cstart = cl::sycl::max(first_used_c, static_cast<Index>(0));
-      const Index cend = cl::sycl::min(last_used_c + 1, SNN_PARAM(out_cols_));
+      const Index out_col_pad =
+          SNN_STATIC_PARAM(window, cols_) - SNN_PARAM(pad_cols_) - 1;
+      const Index cstart = helpers::in_window_start_above_zero(
+          col_idx, SNN_STATIC_PARAM(stride, cols_), out_col_pad);
+      const Index firstc = helpers::in_filter_start_above_zero(
+          col_idx, SNN_STATIC_PARAM(stride, cols_), out_col_pad);
 
-      const Index r = row_idx + SNN_PARAM(pad_rows_);
-      const Index last_used_r = r / SNN_STATIC_PARAM(stride, rows_);
-      const Index first_padded_r = r - SNN_STATIC_PARAM(window, rows_) + 1;
-      const Index first_used_r = RoundRatioUpAboveZero(
-          first_padded_r, SNN_STATIC_PARAM(stride, rows_));
-      const Index firstr =
-          first_used_r * SNN_STATIC_PARAM(stride, rows_) - first_padded_r;
-      const Index rstart = cl::sycl::max(first_used_r, static_cast<Index>(0));
-      const Index rend = cl::sycl::min(last_used_r + 1, SNN_PARAM(out_rows_));
+      const Index out_row_pad =
+          SNN_STATIC_PARAM(window, rows_) - SNN_PARAM(pad_rows_) - 1;
+      const Index rstart = helpers::in_window_start_above_zero(
+          row_idx, SNN_STATIC_PARAM(stride, rows_), out_row_pad);
+      const Index firstr = helpers::in_filter_start_above_zero(
+          row_idx, SNN_STATIC_PARAM(stride, rows_), out_row_pad);
 
       T out_val = static_cast<T>(0);
       const T* input_data_n = input_data +
                               batch * SNN_PARAM(out_cols_) *
                                   SNN_PARAM(out_rows_) * SNN_PARAM(channels_);
-      for (Index r = rstart, i = firstr; r < rend;
+      for (Index r = rstart, i = firstr; i < SNN_STATIC_PARAM(window, rows_);
            ++r, i += SNN_STATIC_PARAM(stride, rows_)) {
-        for (Index c = cstart, j = firstc; c < cend;
-             ++c, j += SNN_STATIC_PARAM(stride, cols_)) {
-          for (Index channel = 0; channel < SNN_PARAM(channels_); ++channel) {
-            const Index idx =
-                (r * SNN_PARAM(out_cols_) + c) * SNN_PARAM(channels_) + channel;
-            const Index mirrored_row = SNN_STATIC_PARAM(window, rows_) - i - 1;
-            const Index mirrored_col = SNN_STATIC_PARAM(window, cols_) - j - 1;
-            const Index k_idx =
-                ((mirrored_row * SNN_STATIC_PARAM(window, cols_) +
-                  mirrored_col) *
-                     SNN_PARAM(features_) +
-                 feature) *
-                    SNN_PARAM(channels_) +
-                channel;
-            out_val += input_data_n[idx] * kernel_data[k_idx];
+        if (r >= 0 && r < SNN_PARAM(out_rows_)) {
+          for (Index c = cstart, j = firstc;
+               j < SNN_STATIC_PARAM(window, cols_);
+               ++c, j += SNN_STATIC_PARAM(stride, cols_)) {
+            if (c >= 0 && c < SNN_PARAM(out_cols_)) {
+              for (Index channel = 0; channel < SNN_PARAM(channels_);
+                   ++channel) {
+                const Index idx =
+                    (r * SNN_PARAM(out_cols_) + c) * SNN_PARAM(channels_) +
+                    channel;
+                const Index mirrored_row =
+                    SNN_STATIC_PARAM(window, rows_) - i - 1;
+                const Index mirrored_col =
+                    SNN_STATIC_PARAM(window, cols_) - j - 1;
+                const Index k_idx =
+                    ((mirrored_row * SNN_STATIC_PARAM(window, cols_) +
+                      mirrored_col) *
+                         SNN_PARAM(features_) +
+                     feature) *
+                        SNN_PARAM(channels_) +
+                    channel;
+                out_val += input_data_n[idx] * kernel_data[k_idx];
+              }
+            }
           }
         }
       }
@@ -244,9 +242,9 @@ struct Conv2DSYCL<T, ConvType::FilterBackprop, use_fast_div, static_out,
   using read_accessor =
       cl::sycl::accessor<buffer_data, 1, read_mode, global_access>;
 
-  inline Conv2DSYCL(Index n_elems, const SYCLConv2DParams& params,
-                    const read_accessor input, const read_accessor kernel,
-                    write_accessor output)
+  Conv2DSYCL(Index n_elems, const SYCLConv2DParams& params,
+             const read_accessor input, const read_accessor kernel,
+             write_accessor output)
       : n_elems_{params.out_rows_ * params.out_cols_ * params.channels_ *
                  params.features_},
         div_features_{params.features_},
@@ -276,11 +274,9 @@ struct Conv2DSYCL<T, ConvType::FilterBackprop, use_fast_div, static_out,
       const Index row_idx = tensor_idx.s0;
 
       const Index cstart = col_idx - SNN_PARAM(pad_cols_);
-      const Index cend =
-          cl::sycl::min(cstart + SNN_PARAM(window_cols_), SNN_PARAM(in_cols_));
+      const Index cend = cstart + SNN_PARAM(window_cols_);
       const Index rstart = row_idx - SNN_PARAM(pad_rows_);
-      const Index rend =
-          cl::sycl::min(rstart + SNN_PARAM(window_rows_), SNN_PARAM(in_rows_));
+      const Index rend = rstart + SNN_PARAM(window_rows_);
 
       const Index filter_rows = RoundRatioUpAboveZero(
           SNN_PARAM(window_rows_), SNN_STATIC_PARAM(stride, rows_));
@@ -292,10 +288,10 @@ struct Conv2DSYCL<T, ConvType::FilterBackprop, use_fast_div, static_out,
       for (Index b = 0; b < SNN_PARAM(batch_); b++) {
         for (Index r = rstart, i = 0; r < rend;
              ++i, r += SNN_STATIC_PARAM(stride, rows_)) {
-          if (r >= 0) {
+          if (r >= 0 && r < SNN_PARAM(in_rows_)) {
             for (Index c = cstart, j = 0; c < cend;
                  ++j, c += SNN_STATIC_PARAM(stride, cols_)) {
-              if (c >= 0) {
+              if (c >= 0 && c < SNN_PARAM(in_cols_)) {
                 const Index idx =
                     (r * SNN_PARAM(in_cols_) + c) * SNN_PARAM(channels_) +
                     channel;
